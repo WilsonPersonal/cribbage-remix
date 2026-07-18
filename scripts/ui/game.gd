@@ -4,7 +4,7 @@ extends Control
 @onready var phase_label: Label = $HUD/Margin/VBox/PhaseLabel
 @onready var pegging_count_label: Label = $HUD/Margin/VBox/PeggingCountLabel
 @onready var pegging_turn_label: Label = $HUD/Margin/VBox/PeggingTurnLabel
-@onready var influence_label: Label = $HUD/Margin/VBox/InfluenceLabel
+@onready var influence_display: Control = $HUD/Margin/VBox/InfluenceDisplay
 @onready var coins_label: Label = $HUD/Margin/VBox/CoinsLabel
 @onready var action_points_label: Label = $HUD/Margin/VBox/ActionPointsLabel
 @onready var faction_actions_label: Label = $HUD/Margin/VBox/FactionActionsLabel
@@ -41,7 +41,6 @@ func _ready() -> void:
 	GameState.phase_changed.connect(_on_phase_changed)
 	GameState.round_started.connect(_on_round_started)
 	GameState.influence_updated.connect(_on_influence_updated)
-	GameState.supply_updated.connect(_on_supply_updated)
 	GameState.coins_updated.connect(_on_coins_updated)
 	GameState.action_points_updated.connect(_on_action_points_updated)
 	GameState.faction_actions_updated.connect(_on_faction_actions_updated)
@@ -217,10 +216,6 @@ func _update_action_phase_ui() -> void:
 
 
 func _on_influence_updated(_influence: Dictionary) -> void:
-	_refresh_ui()
-
-
-func _on_supply_updated(_supply: Dictionary) -> void:
 	_refresh_ui()
 
 
@@ -525,51 +520,13 @@ func _refresh_ui() -> void:
 		status_label.text = "Client | %d player(s) connected" % player_count
 	phase_label.text = "Phase: %s" % _phase_name(GameState.current_phase)
 	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
-	influence_label.text = _format_influence()
+	influence_display.refresh()
 	coins_label.text = _format_coins()
 	action_points_label.text = _format_action_points()
 	faction_actions_label.text = _format_faction_actions()
 	faction_scores_label.text = _format_faction_scores()
 	_update_actions_left_big_display()
 	board.queue_redraw()
-
-
-func _format_influence() -> String:
-	if GameState.player_influence.is_empty():
-		return "Influence: waiting for players..."
-
-	if _all_influence_and_supply_zero():
-		return "Influence / supply: none yet (gain influence by accepting crib cards)."
-
-	var lines: PackedStringArray = ["Influence / supply:"]
-	for peer_id in GameState.player_influence.keys():
-		var player_name: String = GameState.player_names.get(peer_id, "Player %d" % peer_id)
-		var influence: Dictionary = GameState.player_influence[peer_id]
-		var supply: Dictionary = GameState.player_supply.get(peer_id, RemixRules.empty_supply())
-		var parts: PackedStringArray = []
-		for faction in Factions.ALL:
-			var inf := RemixRules.faction_dict_value(influence, faction)
-			var sup := RemixRules.faction_dict_value(supply, faction)
-			if inf > 0 or sup > 0:
-				parts.append("%s inf %d sup %d" % [Factions.name_for(faction), inf, sup])
-		if parts.is_empty():
-			lines.append("%s: —" % player_name)
-		else:
-			lines.append("%s: %s" % [player_name, ", ".join(parts)])
-
-	return "\n".join(lines)
-
-
-func _all_influence_and_supply_zero() -> bool:
-	for peer_id in GameState.player_influence.keys():
-		var influence: Dictionary = GameState.player_influence[peer_id]
-		var supply: Dictionary = GameState.player_supply.get(peer_id, RemixRules.empty_supply())
-		for faction in Factions.ALL:
-			if RemixRules.faction_dict_value(influence, faction) > 0:
-				return false
-			if RemixRules.faction_dict_value(supply, faction) > 0:
-				return false
-	return true
 
 
 func _format_coins() -> String:

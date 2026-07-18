@@ -29,6 +29,7 @@ var _selected_indices: Array = []
 var _display_hand: Array = []
 var _crib_cards: Array = []
 var _selected_crib_card: int = -1
+var _crib_mode_selected: bool = false
 var _pending_crib_accept: bool = false
 var _crib_choices: Dictionary = {}
 var _required_accepts: int = 0
@@ -83,6 +84,7 @@ func handle_crib_hex(hex_index: int) -> void:
 
 	GameState.submit_crib_card_choice(_selected_crib_card, _pending_crib_accept, hex_index)
 	_selected_crib_card = -1
+	_clear_crib_placement_mode()
 
 
 func _on_confirm_discard_pressed() -> void:
@@ -102,6 +104,8 @@ func _on_crib_accept_pressed() -> void:
 		crib_help_label.text = "Select a crib card, then click a hex with that faction's cube."
 		return
 	_pending_crib_accept = true
+	_crib_mode_selected = true
+	_update_crib_action_button_styles()
 	crib_help_label.text = "Accept selected — click a hex with a matching cube."
 
 
@@ -110,7 +114,23 @@ func _on_crib_reject_pressed() -> void:
 		crib_help_label.text = "Select a crib card, then click a valid hex for its rank."
 		return
 	_pending_crib_accept = false
+	_crib_mode_selected = true
+	_update_crib_action_button_styles()
 	crib_help_label.text = "Reject selected — click a hex matching the card rank."
+
+
+func _clear_crib_placement_mode() -> void:
+	_crib_mode_selected = false
+	_update_crib_action_button_styles()
+
+
+func _update_crib_action_button_styles() -> void:
+	crib_accept_button.modulate = (
+		Color(1.0, 1.0, 0.75) if _crib_mode_selected and _pending_crib_accept else Color.WHITE
+	)
+	crib_reject_button.modulate = (
+		Color(1.0, 1.0, 0.75) if _crib_mode_selected and not _pending_crib_accept else Color.WHITE
+	)
 
 
 func _on_local_hand_updated(hand: Array) -> void:
@@ -137,6 +157,7 @@ func _on_crib_resolution_updated(crib_cards: Array, resolved: Dictionary, _resol
 	_crib_choices = resolved.duplicate(true)
 	if _crib_choices.has(_selected_crib_card):
 		_selected_crib_card = -1
+	_clear_crib_placement_mode()
 	_refresh_crib_display()
 	_update_crib_help()
 
@@ -159,6 +180,7 @@ func _on_phase_changed(phase: GameState.Phase) -> void:
 	_selected_indices.clear()
 	_selected_crib_card = -1
 	_crib_choices.clear()
+	_clear_crib_placement_mode()
 	_update_action_buttons()
 	_update_pegging_visibility(phase)
 	_update_crib_visibility(phase)
@@ -289,6 +311,7 @@ func _on_crib_card_pressed(index: int) -> void:
 	if _crib_choices.has(index):
 		return
 	_selected_crib_card = index
+	_clear_crib_placement_mode()
 	_refresh_crib_display()
 	_update_crib_help()
 
