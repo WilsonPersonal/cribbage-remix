@@ -110,6 +110,10 @@ func _on_phase_changed(_phase: GameState.Phase) -> void:
 	end_shop_button.visible = in_shop
 	shop_buttons.visible = in_shop
 	end_actions_button.visible = GameState.current_phase == GameState.Phase.SPEND_ACTIONS
+	start_round_button.visible = NetworkManager.is_server() and GameState.current_phase in [
+		GameState.Phase.WAITING,
+		GameState.Phase.ROUND_END,
+	]
 	_refresh_ui()
 
 
