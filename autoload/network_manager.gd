@@ -11,9 +11,18 @@ signal connection_failed
 signal server_disconnected
 
 var _peer: ENetMultiplayerPeer
+var offline_debug_mode: bool = false
+
+
+func start_offline_debug() -> void:
+	offline_debug_mode = true
+	var offline_peer := OfflineMultiplayerPeer.new()
+	multiplayer.multiplayer_peer = offline_peer
+	server_started.emit()
 
 
 func host_game(port: int = DEFAULT_PORT) -> Error:
+	offline_debug_mode = false
 	_peer = ENetMultiplayerPeer.new()
 	var err := _peer.create_server(port, MAX_PLAYERS)
 	if err != OK:
@@ -25,6 +34,7 @@ func host_game(port: int = DEFAULT_PORT) -> Error:
 
 
 func join_game(address: String, port: int = DEFAULT_PORT) -> Error:
+	offline_debug_mode = false
 	_peer = ENetMultiplayerPeer.new()
 	var err := _peer.create_client(address, port)
 	if err != OK:
@@ -38,10 +48,15 @@ func disconnect_from_game() -> void:
 	if multiplayer.multiplayer_peer:
 		multiplayer.multiplayer_peer.close()
 		multiplayer.multiplayer_peer = null
+	offline_debug_mode = false
+
+
+func is_offline_debug() -> bool:
+	return offline_debug_mode
 
 
 func is_server() -> bool:
-	return multiplayer.is_server()
+	return offline_debug_mode or multiplayer.is_server()
 
 
 func get_local_peer_id() -> int:

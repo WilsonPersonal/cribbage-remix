@@ -6,6 +6,7 @@ extends Control
 @onready var port_input: LineEdit = $Panel/VBox/PortInput
 @onready var name_input: LineEdit = $Panel/VBox/NameInput
 @onready var status_label: Label = $Panel/VBox/StatusLabel
+@onready var offline_button: Button = $Panel/VBox/OfflineDebugButton
 
 const GAME_SCENE := preload("res://scenes/game.tscn")
 
@@ -13,6 +14,7 @@ const GAME_SCENE := preload("res://scenes/game.tscn")
 func _ready() -> void:
 	host_button.pressed.connect(_on_host_pressed)
 	join_button.pressed.connect(_on_join_pressed)
+	offline_button.pressed.connect(_on_offline_pressed)
 	NetworkManager.server_started.connect(_on_server_started)
 	NetworkManager.connected_to_server.connect(_on_connected_to_server)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
@@ -52,6 +54,16 @@ func _on_connected_to_server() -> void:
 
 func _on_connection_failed() -> void:
 	status_label.text = "Connection failed. Check address and port."
+
+
+func _on_offline_pressed() -> void:
+	status_label.text = "Starting offline debug session..."
+	NetworkManager.start_offline_debug()
+	_enter_game_offline()
+
+
+func _enter_game_offline() -> void:
+	get_tree().change_scene_to_packed(GAME_SCENE)
 
 
 func _enter_game() -> void:

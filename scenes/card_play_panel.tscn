@@ -1,6 +1,4 @@
-[gd_scene load_steps=2 format=3 uid="uid://card_play_panel"]
-
-[ext_resource type="Script" path="res://scripts/ui/card_play_panel.gd" id="1"]
+[gd_scene format=3 uid="uid://b34fql2wvv4u7"]
 
 [node name="CardPlayPanel" type="PanelContainer"]
 anchors_preset = 12

@@ -16,6 +16,9 @@ extends Control
 @onready var buy_diamonds_button: Button = $HUD/Margin/VBox/ShopButtons/BuyDiamondsButton
 @onready var board: Control = $Board
 @onready var card_panel: PanelContainer = $CardPlayPanel
+@onready var offline_bar: HBoxContainer = $HUD/Margin/VBox/OfflineBar
+@onready var control_peer_label: Label = $HUD/Margin/VBox/OfflineBar/ControlPeerLabel
+@onready var switch_player_button: Button = $HUD/Margin/VBox/OfflineBar/SwitchPlayerButton
 
 
 func _ready() -> void:
@@ -29,6 +32,7 @@ func _ready() -> void:
 	GameState.faction_scores_updated.connect(_on_faction_scores_updated)
 	GameState.winner_decided.connect(_on_winner_decided)
 	GameState.game_message.connect(_on_game_message)
+	GameState.active_control_changed.connect(_on_active_control_changed)
 	NetworkManager.player_connected.connect(_on_player_connected)
 	NetworkManager.player_disconnected.connect(_on_player_disconnected)
 
@@ -45,14 +49,22 @@ func _ready() -> void:
 	card_panel.discard_submitted.connect(_on_discard_submitted)
 	card_panel.pegging_play_requested.connect(_on_pegging_play_requested)
 	card_panel.pegging_pass_requested.connect(_on_pegging_pass_requested)
+	switch_player_button.pressed.connect(_on_switch_player_pressed)
 
-	if NetworkManager.is_server():
-		GameState.register_player(NetworkManager.get_local_peer_id())
+	if NetworkManager.is_offline_debug():
+		offline_bar.visible = true
+		GameState.setup_offline_session("Player 1", "Player 2")
+	else:
+		offline_bar.visible = false
+		if NetworkManager.is_server():
+			GameState.register_player(NetworkManager.get_local_peer_id())
 
 	_refresh_ui()
 
 
 func _on_player_connected(peer_id: int) -> void:
+	if NetworkManager.is_offline_debug():
+		return
 	if NetworkManager.is_server():
 		GameState.register_player(peer_id)
 	_refresh_ui()
@@ -105,6 +117,14 @@ func _on_pegging_pass_requested() -> void:
 
 func _on_game_message(message: String) -> void:
 	status_label.text = message
+
+
+func _on_active_control_changed(_peer_id: int) -> void:
+	_refresh_ui()
+
+
+func _on_switch_player_pressed() -> void:
+	GameState.toggle_control_peer()
 
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:
@@ -161,11 +181,16 @@ func _on_winner_decided(peer_id: int, faction_id: int) -> void:
 
 
 func _refresh_ui() -> void:
-	var player_count := multiplayer.get_peers().size() + 1
-	status_label.text = "%s | %d player(s) connected" % [
-		"Host" if NetworkManager.is_server() else "Client",
-		player_count,
-	]
+	var player_count := GameState.get_player_count() if NetworkManager.is_offline_debug() else multiplayer.get_peers().size() + 1
+	if NetworkManager.is_offline_debug():
+		status_label.text = "Offline debug | %d local players" % player_count
+		var control_id := GameState.get_control_peer_id()
+		var control_name: String = GameState.player_names.get(control_id, "Player %d" % control_id)
+		control_peer_label.text = "Controlling: %s" % control_name
+	elif NetworkManager.is_server():
+		status_label.text = "Host | %d player(s) connected" % player_count
+	else:
+		status_label.text = "Client | %d player(s) connected" % player_count
 	phase_label.text = "Phase: %s" % _phase_name(GameState.current_phase)
 	influence_label.text = _format_influence()
 	coins_label.text = _format_coins()

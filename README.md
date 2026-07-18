@@ -65,9 +65,22 @@ Always **2 accept / 2 reject** across all 4 crib cards.
 
 ## Quick start
 
-1. Open `project.godot` in Godot 4.3+
-2. Press **F5**
-3. Multiplayer: **Debug → Run Multiple Instances**, host/join on `127.0.0.1:7777`
+1. Open `project.godot` in Godot 4.4+.
+2. Press **F5** to run.
+3. Pick a mode on the main menu:
+   - **Offline Debug** — one window, hot-seat both players (best for solo testing)
+   - **Host / Join** — online multiplayer on port `7777`
+
+### Offline debug
+
+1. Click **Offline Debug (2 players, 1 window)**.
+2. Click **Start Round**.
+3. Play as the active player; use **Switch Player** for the other seat.
+4. The game auto-switches during discard, pegging turns, and crib resolution.
+
+### Online multiplayer
+
+Use **Debug → Run Multiple Instances**, then host/join on `127.0.0.1`.
 
 ## Project structure
 

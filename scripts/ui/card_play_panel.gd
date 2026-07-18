@@ -27,6 +27,7 @@ func _ready() -> void:
 	GameState.pegging_state_updated.connect(_on_pegging_state_updated)
 	GameState.phase_changed.connect(_on_phase_changed)
 	GameState.game_message.connect(_on_game_message)
+	GameState.active_control_changed.connect(_on_active_control_changed)
 	_on_phase_changed(GameState.current_phase)
 	_refresh_hand_display()
 
@@ -85,6 +86,12 @@ func _on_game_message(message: String) -> void:
 	message_label.text = message
 
 
+func _on_active_control_changed(_peer_id: int) -> void:
+	_selected_indices.clear()
+	_update_action_buttons()
+	_refresh_hand_display()
+
+
 func _refresh_hand_display() -> void:
 	for child in hand_container.get_children():
 		child.queue_free()
@@ -128,13 +135,17 @@ func _toggle_discard_selection(index: int) -> void:
 
 func _update_action_buttons() -> void:
 	var phase := GameState.current_phase
-	confirm_discard_button.visible = phase == GameState.Phase.DISCARD_TO_CRIB
+	confirm_discard_button.visible = phase == GameState.Phase.DISCARD_TO_CRIB and _can_discard_for_control()
 	pass_button.visible = phase == GameState.Phase.PEGGING and _is_my_pegging_turn()
 	pass_button.disabled = not _can_pass_pegging()
 
 
 func _is_my_pegging_turn() -> bool:
-	return GameState.pegging_turn_peer == NetworkManager.get_local_peer_id()
+	return GameState.is_controlled_turn(GameState.pegging_turn_peer)
+
+
+func _can_discard_for_control() -> bool:
+	return GameState.is_discard_pending_for_control()
 
 
 func _can_pass_pegging() -> bool:

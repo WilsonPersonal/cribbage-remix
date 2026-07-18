@@ -29,6 +29,10 @@ signal starter_updated(card: Dictionary)
 signal pegging_state_updated(sequence: Array, total: int, turn_peer: int)
 signal crib_count_updated(count: int)
 signal game_message(message: String)
+signal active_control_changed(peer_id: int)
+
+var offline_debug_mode: bool = false
+var active_control_peer_id: int = 1
 
 var current_phase: Phase = Phase.WAITING
 var round_number: int = 0
@@ -62,8 +66,89 @@ var _board := HexBoard.new()
 var _deck: Array = []
 
 
+func setup_offline_session(player_one_name: String = "Player 1", player_two_name: String = "Player 2") -> void:
+	if not NetworkManager.is_offline_debug():
+		return
+
+	offline_debug_mode = true
+	player_names.clear()
+	player_influence.clear()
+	player_supply.clear()
+	player_coins.clear()
+	action_points.clear()
+	player_faction_actions.clear()
+	register_player(1, player_one_name)
+	register_player(2, player_two_name)
+	set_active_control_peer(1)
+	_broadcast_message("Offline debug: switch players to control each seat.")
+
+
+func get_control_peer_id() -> int:
+	if offline_debug_mode:
+		return active_control_peer_id
+	return multiplayer.get_unique_id()
+
+
+func set_active_control_peer(peer_id: int) -> void:
+	if not hands.has(peer_id) and not player_names.has(peer_id):
+		return
+
+	active_control_peer_id = peer_id
+	local_hand = hands.get(peer_id, []).duplicate(true)
+	local_hand_updated.emit(local_hand)
+	active_control_changed.emit(peer_id)
+
+
+func toggle_control_peer() -> void:
+	if not offline_debug_mode:
+		return
+
+	var peers := _sorted_peer_ids()
+	if peers.size() < 2:
+		return
+
+	var index := peers.find(active_control_peer_id)
+	if index < 0:
+		index = 0
+	set_active_control_peer(int(peers[(index + 1) % peers.size()]))
+
+
+func is_discard_pending_for_control() -> bool:
+	if current_phase != Phase.DISCARD_TO_CRIB:
+		return false
+	return not discard_ready.get(get_control_peer_id(), false)
+
+
+func is_controlled_turn(peer_id: int) -> bool:
+	return get_control_peer_id() == peer_id
+
+
+func _action_peer_id() -> int:
+	if offline_debug_mode:
+		return active_control_peer_id
+	return multiplayer.get_remote_sender_id()
+
+
+func _update_offline_active_player() -> void:
+	if not offline_debug_mode:
+		return
+
+	match current_phase:
+		Phase.DISCARD_TO_CRIB:
+			for peer_id in active_player_order:
+				if not discard_ready.get(peer_id, false):
+					set_active_control_peer(int(peer_id))
+					return
+		Phase.PEGGING:
+			if pegging_turn_peer != 0:
+				set_active_control_peer(pegging_turn_peer)
+		Phase.RESOLVE_CRIB:
+			if crib_owner_peer_id != 0:
+				set_active_control_peer(crib_owner_peer_id)
+
+
 func register_player(peer_id: int, player_name: String = "") -> void:
-	if not multiplayer.is_server():
+	if not NetworkManager.is_server():
 		return
 
 	if player_name.is_empty():
@@ -141,7 +226,7 @@ func request_discard(card_indices: Array) -> void:
 	if current_phase != Phase.DISCARD_TO_CRIB:
 		return
 
-	var peer_id := multiplayer.get_remote_sender_id()
+	var peer_id := _action_peer_id()
 	if discard_ready.get(peer_id, false):
 		return
 
@@ -167,6 +252,8 @@ func request_discard(card_indices: Array) -> void:
 
 	if _all_players_discarded():
 		_cut_starter()
+	else:
+		_update_offline_active_player()
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -176,7 +263,7 @@ func request_pegging_play(hand_index: int) -> void:
 	if current_phase != Phase.PEGGING:
 		return
 
-	var peer_id := multiplayer.get_remote_sender_id()
+	var peer_id := _action_peer_id()
 	if peer_id != pegging_turn_peer:
 		return
 
@@ -217,7 +304,7 @@ func request_pegging_pass() -> void:
 	if current_phase != Phase.PEGGING:
 		return
 
-	var peer_id := multiplayer.get_remote_sender_id()
+	var peer_id := _action_peer_id()
 	if peer_id != pegging_turn_peer:
 		return
 
@@ -269,7 +356,7 @@ func request_shop_purchase(faction_id: int) -> void:
 	if faction_id not in Factions.ALL:
 		return
 
-	var peer_id := multiplayer.get_remote_sender_id()
+	var peer_id := _action_peer_id()
 	var coins := int(player_coins.get(peer_id, 0))
 	if not Shop.can_buy_faction_action(coins):
 		return
@@ -305,7 +392,7 @@ func request_faction_action(
 	if current_phase != Phase.SPEND_ACTIONS:
 		return
 
-	var peer_id := multiplayer.get_remote_sender_id()
+	var peer_id := _action_peer_id()
 	var spend_result := _spend_for_faction_action(peer_id, faction_id)
 	if not spend_result.spent:
 		return
@@ -345,7 +432,7 @@ func request_crib_resolution(choices: Array) -> void:
 	if current_phase != Phase.RESOLVE_CRIB:
 		return
 
-	var peer_id := multiplayer.get_remote_sender_id()
+	var peer_id := _action_peer_id()
 	if crib_owner_peer_id != 0 and peer_id != crib_owner_peer_id:
 		return
 	if not _validate_crib_choices(choices):
@@ -440,6 +527,7 @@ func _deal_cards() -> void:
 	crib_owner_peer_id = dealer_peer_id
 	_sync_crib_count.rpc(crib.size())
 	_set_phase(Phase.DISCARD_TO_CRIB)
+	_update_offline_active_player()
 	_broadcast_message("Discard %d cards to the crib." % RemixRules.crib_discard_count(active_player_order.size()))
 
 
@@ -547,6 +635,12 @@ func _sorted_peer_ids() -> Array:
 
 
 func _send_local_hand(peer_id: int, hand: Array) -> void:
+	if offline_debug_mode:
+		if peer_id == active_control_peer_id:
+			local_hand = hand.duplicate(true)
+			local_hand_updated.emit(local_hand)
+		return
+
 	_sync_local_hand.rpc_id(peer_id, hand)
 	if peer_id == multiplayer.get_unique_id():
 		local_hand = hand.duplicate(true)
@@ -555,6 +649,7 @@ func _send_local_hand(peer_id: int, hand: Array) -> void:
 
 func _broadcast_pegging_state() -> void:
 	_sync_pegging_state.rpc(pegging_sequence, pegging_total, pegging_turn_peer)
+	_update_offline_active_player()
 
 
 func _broadcast_message(message: String) -> void:
@@ -654,6 +749,7 @@ func _broadcast_board() -> void:
 func _set_phase(phase: Phase) -> void:
 	current_phase = phase
 	_sync_phase.rpc(phase)
+	_update_offline_active_player()
 
 
 @rpc("authority", "call_remote", "reliable")
