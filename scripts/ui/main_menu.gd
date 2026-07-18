@@ -43,6 +43,8 @@ func _on_join_pressed() -> void:
 
 
 func _on_server_started() -> void:
+	if NetworkManager.is_offline_debug():
+		return
 	status_label.text = "Host ready. Loading game..."
 	_enter_game()
 

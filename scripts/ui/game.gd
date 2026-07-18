@@ -2,6 +2,8 @@ extends Control
 
 @onready var status_label: Label = $HUD/Margin/VBox/StatusLabel
 @onready var phase_label: Label = $HUD/Margin/VBox/PhaseLabel
+@onready var pegging_count_label: Label = $HUD/Margin/VBox/PeggingCountLabel
+@onready var pegging_turn_label: Label = $HUD/Margin/VBox/PeggingTurnLabel
 @onready var influence_label: Label = $HUD/Margin/VBox/InfluenceLabel
 @onready var coins_label: Label = $HUD/Margin/VBox/CoinsLabel
 @onready var action_points_label: Label = $HUD/Margin/VBox/ActionPointsLabel
@@ -15,7 +17,7 @@ extends Control
 @onready var buy_hearts_button: Button = $HUD/Margin/VBox/ShopButtons/BuyHeartsButton
 @onready var buy_diamonds_button: Button = $HUD/Margin/VBox/ShopButtons/BuyDiamondsButton
 @onready var board: Control = $Board
-@onready var card_panel: PanelContainer = $CardPlayPanel
+@onready var card_panel = $CardPlayPanel
 @onready var offline_bar: HBoxContainer = $HUD/Margin/VBox/OfflineBar
 @onready var control_peer_label: Label = $HUD/Margin/VBox/OfflineBar/ControlPeerLabel
 @onready var switch_player_button: Button = $HUD/Margin/VBox/OfflineBar/SwitchPlayerButton
@@ -33,6 +35,7 @@ func _ready() -> void:
 	GameState.winner_decided.connect(_on_winner_decided)
 	GameState.game_message.connect(_on_game_message)
 	GameState.active_control_changed.connect(_on_active_control_changed)
+	GameState.pegging_state_updated.connect(_on_pegging_state_updated)
 	NetworkManager.player_connected.connect(_on_player_connected)
 	NetworkManager.player_disconnected.connect(_on_player_disconnected)
 
@@ -54,6 +57,7 @@ func _ready() -> void:
 	if NetworkManager.is_offline_debug():
 		offline_bar.visible = true
 		GameState.setup_offline_session("Player 1", "Player 2")
+		call_deferred("_auto_start_offline_round")
 	else:
 		offline_bar.visible = false
 		if NetworkManager.is_server():
@@ -79,12 +83,17 @@ func _on_start_round_pressed() -> void:
 		GameState.start_new_round()
 
 
+func _auto_start_offline_round() -> void:
+	if NetworkManager.is_offline_debug() and GameState.current_phase == GameState.Phase.WAITING:
+		GameState.start_new_round()
+
+
 func _on_end_shop_pressed() -> void:
-	GameState.request_end_shop_phase.rpc_id(1)
+	GameState.submit_end_shop_phase()
 
 
 func _on_end_actions_pressed() -> void:
-	GameState.request_end_action_phase.rpc_id(1)
+	GameState.submit_end_action_phase()
 
 
 func _on_buy_clubs_pressed() -> void:
@@ -100,19 +109,19 @@ func _on_buy_diamonds_pressed() -> void:
 
 
 func _buy_faction_action(faction_id: int) -> void:
-	GameState.request_shop_purchase.rpc_id(1, faction_id)
+	GameState.submit_shop_purchase(faction_id)
 
 
 func _on_discard_submitted(card_indices: Array) -> void:
-	GameState.request_discard.rpc_id(1, card_indices)
+	GameState.submit_discard(card_indices)
 
 
 func _on_pegging_play_requested(hand_index: int) -> void:
-	GameState.request_pegging_play.rpc_id(1, hand_index)
+	GameState.submit_pegging_play(hand_index)
 
 
 func _on_pegging_pass_requested() -> void:
-	GameState.request_pegging_pass.rpc_id(1)
+	GameState.submit_pegging_pass()
 
 
 func _on_game_message(message: String) -> void:
@@ -127,6 +136,10 @@ func _on_switch_player_pressed() -> void:
 	GameState.toggle_control_peer()
 
 
+func _on_pegging_state_updated(_sequence: Array, total: int, turn_peer: int) -> void:
+	_update_pegging_hud(total, turn_peer)
+
+
 func _on_phase_changed(_phase: GameState.Phase) -> void:
 	var in_shop := GameState.current_phase == GameState.Phase.SHOP
 	end_shop_button.visible = in_shop
@@ -136,6 +149,7 @@ func _on_phase_changed(_phase: GameState.Phase) -> void:
 		GameState.Phase.WAITING,
 		GameState.Phase.ROUND_END,
 	]
+	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	_refresh_ui()
 
 
@@ -192,6 +206,7 @@ func _refresh_ui() -> void:
 	else:
 		status_label.text = "Client | %d player(s) connected" % player_count
 	phase_label.text = "Phase: %s" % _phase_name(GameState.current_phase)
+	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	influence_label.text = _format_influence()
 	coins_label.text = _format_coins()
 	action_points_label.text = _format_action_points()
@@ -274,6 +289,21 @@ func _format_faction_scores() -> String:
 	for faction in Factions.ALL:
 		lines.append("%s: %d" % [Factions.name_for(faction), GameState.faction_scores.get(faction, 0)])
 	return "\n".join(lines)
+
+
+func _update_pegging_hud(total: int, turn_peer: int) -> void:
+	var in_pegging := GameState.current_phase == GameState.Phase.PEGGING
+	pegging_count_label.visible = in_pegging
+	pegging_turn_label.visible = in_pegging
+
+	if not in_pegging:
+		return
+
+	pegging_count_label.text = "Count: %d / %d" % [total, PeggingRules.MAX_TOTAL]
+	pegging_turn_label.text = "Turn: %s" % GameState.player_names.get(
+		turn_peer,
+		"Player %d" % turn_peer
+	)
 
 
 func _phase_name(phase: GameState.Phase) -> String:

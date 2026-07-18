@@ -9,6 +9,8 @@ const CardWidgetScene := preload("res://scenes/card_widget.tscn")
 @onready var message_label: Label = $Margin/VBox/MessageLabel
 @onready var starter_label: Label = $Margin/VBox/StarterLabel
 @onready var pegging_label: Label = $Margin/VBox/PeggingLabel
+@onready var pegging_count_label: Label = $Margin/VBox/PeggingCountLabel
+@onready var pegging_turn_label: Label = $Margin/VBox/PeggingTurnLabel
 @onready var hand_container: HBoxContainer = $Margin/VBox/HandContainer
 @onready var pegging_container: HBoxContainer = $Margin/VBox/PeggingContainer
 @onready var action_row: HBoxContainer = $Margin/VBox/ActionRow
@@ -20,6 +22,10 @@ var _selected_indices: Array = []
 
 
 func _ready() -> void:
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.1, 0.12, 0.16, 0.92)
+	add_theme_stylebox_override("panel", panel_style)
+
 	confirm_discard_button.pressed.connect(_on_confirm_discard_pressed)
 	pass_button.pressed.connect(_on_pass_pressed)
 	GameState.local_hand_updated.connect(_on_local_hand_updated)
@@ -58,9 +64,14 @@ func _on_starter_updated(card: Dictionary) -> void:
 
 
 func _on_pegging_state_updated(sequence: Array, total: int, turn_peer: int) -> void:
-	pegging_label.text = "Pegging total: %d | Turn: %s" % [
+	pegging_count_label.text = "Count: %d / %d" % [total, PeggingRules.MAX_TOTAL]
+	pegging_turn_label.text = "Turn: %s" % GameState.player_names.get(
+		turn_peer,
+		"Player %d" % turn_peer
+	)
+	message_label.text = "Count: %d / %d — play a card or pass if you cannot." % [
 		total,
-		GameState.player_names.get(turn_peer, "Player %d" % turn_peer),
+		PeggingRules.MAX_TOTAL,
 	]
 	_refresh_pegging_display(sequence)
 	_update_action_buttons()
@@ -69,16 +80,27 @@ func _on_pegging_state_updated(sequence: Array, total: int, turn_peer: int) -> v
 func _on_phase_changed(phase: GameState.Phase) -> void:
 	_selected_indices.clear()
 	_update_action_buttons()
+	_update_pegging_visibility(phase)
 	match phase:
 		GameState.Phase.DISCARD_TO_CRIB:
 			message_label.text = "Select cards to discard to the crib."
 		GameState.Phase.PEGGING:
-			message_label.text = "Play a card or pass if you cannot."
+			message_label.text = "Count: %d / %d — play a card or pass if you cannot." % [
+				GameState.pegging_total,
+				PeggingRules.MAX_TOTAL,
+			]
 		GameState.Phase.SHOW_HANDS:
 			message_label.text = "Scoring hands for actions..."
 		_:
-			if phase == GameState.Phase.WAITING or phase == GameState.Phase.DEAL:
-				message_label.text = "Waiting for the deal..."
+			if phase == GameState.Phase.WAITING:
+				if NetworkManager.is_offline_debug():
+					message_label.text = "Starting round..."
+				else:
+					message_label.text = "Click Start Round (right panel) to deal cards."
+			elif phase == GameState.Phase.DEAL:
+				message_label.text = "Dealing cards..."
+			elif phase == GameState.Phase.ROUND_END:
+				message_label.text = "Round complete. Click Start Round for the next round."
 	_refresh_hand_display()
 
 
@@ -150,3 +172,22 @@ func _can_discard_for_control() -> bool:
 
 func _can_pass_pegging() -> bool:
 	return not PeggingRules.has_any_play(_local_hand, GameState.pegging_total)
+
+
+func _update_pegging_visibility(phase: GameState.Phase) -> void:
+	var in_pegging := phase == GameState.Phase.PEGGING
+	pegging_label.visible = in_pegging
+	pegging_count_label.visible = in_pegging
+	pegging_turn_label.visible = in_pegging
+	pegging_container.visible = in_pegging
+
+	if in_pegging:
+		pegging_count_label.text = "Count: %d / %d" % [
+			GameState.pegging_total,
+			PeggingRules.MAX_TOTAL,
+		]
+		pegging_turn_label.text = "Turn: %s" % GameState.player_names.get(
+			GameState.pegging_turn_peer,
+			"Player %d" % GameState.pegging_turn_peer
+		)
+		_refresh_pegging_display(GameState.pegging_sequence)

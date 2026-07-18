@@ -1,69 +1,205 @@
 class_name HexBoard
 extends RefCounted
 
-const HEX_COUNT := 9
-const CUBES_PER_FACTION := 3
+enum Terrain {
+	MOUNTAIN,
+	FOREST,
+	PASTURE,
+}
 
-const WEST_HEXES := [0, 1, 6]
-const EAST_HEXES := [8, 5, 2]
+const HEX_COUNT := 9
+
+## Pasture (light green), forest (dark green), and mountain (grey) setup counts.
+const PASTURE_SETUP_CUBES := 3
+const FOREST_SETUP_CUBES := 2
+const MOUNTAIN_SETUP_CUBES := 5
+
+## Map layout (see reference image):
+##       [0 M 3,8]
+##   [1 F5]   [8 F5]
+##       [4 P4]
+##   [3 F5]   [5 P7]
+## [6 M29]     [7 M110]
+const MOUNTAIN_HEXES := [0, 6, 7]
+const FOREST_HEXES := [1, 3, 8]
+const PASTURE_HEXES := [2, 4, 5]
+
+const CART_GOALS := {
+	0: 8,
+	6: 3,
+	7: 1,
+}
+
+const BRIDGE_PAIRS := [
+	[0, 1],
+	[3, 7],
+	[6, 8],
+]
+
+## Axial coordinates (q, r) on a flat-top hex grid.
+## Pixel spacing uses center-to-vertex radius R:
+##   x = R * 1.5 * q
+##   y = R * sqrt(3) * (r + q * 0.5)
+const HEX_COORDS := {
+	0: Vector2i(0, -1),
+	1: Vector2i(-1, 0),
+	2: Vector2i(2, 0),
+	3: Vector2i(0, 1),
+	4: Vector2i(0, 0),
+	5: Vector2i(1, 0),
+	6: Vector2i(-1, 2),
+	7: Vector2i(2, -1),
+	8: Vector2i(1, -1),
+}
 
 const ADJACENCY := {
 	0: [1, 2],
-	1: [0, 2, 3, 4],
-	2: [0, 1, 4, 5],
-	3: [1, 4, 6],
-	4: [1, 2, 3, 5, 6, 7],
-	5: [2, 4, 7, 8],
-	6: [3, 4, 7],
-	7: [4, 5, 6, 8],
-	8: [5, 7],
+	1: [0, 2, 4],
+	2: [0, 1, 3, 4, 5],
+	3: [2, 5, 7],
+	4: [1, 2, 6, 8],
+	5: [2, 3, 7, 8],
+	6: [4, 8],
+	7: [3, 5],
+	8: [4, 5, 6],
 }
 
-## Hex indices 0-8 display as numbers 1-9 for crib reject placement.
-const HEX_NUMBERS := {
-	0: 1,
-	1: 2,
-	2: 3,
-	3: 4,
-	4: 5,
-	5: 6,
-	6: 7,
-	7: 8,
-	8: 9,
+const TERRAIN := {
+	0: Terrain.MOUNTAIN,
+	1: Terrain.FOREST,
+	2: Terrain.PASTURE,
+	3: Terrain.FOREST,
+	4: Terrain.PASTURE,
+	5: Terrain.PASTURE,
+	6: Terrain.MOUNTAIN,
+	7: Terrain.MOUNTAIN,
+	8: Terrain.FOREST,
+}
+
+const HEX_LABELS := {
+	0: [3, 8],
+	1: [5],
+	2: [6],
+	3: [5],
+	4: [4],
+	5: [7],
+	6: [2, 9],
+	7: [1, 10],
+	8: [5],
 }
 
 var hexes: Array = []
-var _distance_to_east: Dictionary = {}
+var _distance_cache: Dictionary = {}
 
 
 func _init() -> void:
-	_distance_to_east = _compute_distances_to_east()
 	reset()
 
 
-func reset(cubes_per_faction: int = CUBES_PER_FACTION) -> void:
+func reset() -> void:
 	hexes.clear()
+	_distance_cache.clear()
 
 	for _i in range(HEX_COUNT):
 		hexes.append(_empty_hex())
 
-	var faction_index := 0
-	for faction in Factions.ALL:
-		for cube in range(cubes_per_faction):
-			var hex_index := (faction_index * HEX_COUNT + cube * 2) % HEX_COUNT
-			hexes[hex_index]["cubes"][faction] += 1
-		faction_index += 1
+
+## Draw setup cards from the deck, place matching suit cubes, and return the drawn cards.
+func setup_from_deck(deck: Array) -> Array:
+	reset()
+	var drawn: Array = []
+
+	for hex_index in range(HEX_COUNT):
+		var draw_count := setup_cube_count_for(hex_index)
+
+		for _draw in range(draw_count):
+			if deck.is_empty():
+				push_warning("Setup deck ran out while placing cubes on hex %d." % hex_index)
+				break
+
+			var card: Dictionary = deck.pop_back()
+			drawn.append(card)
+			var faction: int = int(card.get("faction", Factions.from_suit(str(card.get("suit", "clubs")))))
+			hexes[hex_index]["cubes"][faction] = int(hexes[hex_index]["cubes"].get(faction, 0)) + 1
+
+	return drawn
+
+
+static func setup_cube_count_for(hex_index: int) -> int:
+	return setup_cube_count_for_terrain(terrain_for(hex_index))
+
+
+static func setup_cube_count_for_terrain(terrain: int) -> int:
+	match terrain:
+		Terrain.MOUNTAIN:
+			return MOUNTAIN_SETUP_CUBES
+		Terrain.FOREST:
+			return FOREST_SETUP_CUBES
+		Terrain.PASTURE:
+			return PASTURE_SETUP_CUBES
+		_:
+			return 0
+
+
+static func terrain_name(terrain: int) -> String:
+	match terrain:
+		Terrain.MOUNTAIN:
+			return "mountain"
+		Terrain.FOREST:
+			return "forest"
+		Terrain.PASTURE:
+			return "pasture"
+		_:
+			return "unknown"
+
+
+static func terrain_for(hex_index: int) -> int:
+	return TERRAIN.get(hex_index, Terrain.PASTURE)
+
+
+static func labels_for(hex_index: int) -> Array:
+	return HEX_LABELS.get(hex_index, [])
+
+
+static func axial_coord(hex_index: int) -> Vector2i:
+	return HEX_COORDS.get(hex_index, Vector2i.ZERO)
+
+
+static func pixel_center(hex_index: int, radius: float, origin: Vector2) -> Vector2:
+	var coord := axial_coord(hex_index)
+	var x := radius * 1.5 * float(coord.x)
+	var y := radius * sqrt(3.0) * (float(coord.y) + float(coord.x) * 0.5)
+	return origin + Vector2(x, y)
+
+
+static func hex_corner_offset(vertex_index: int, radius: float) -> Vector2:
+	var angle := deg_to_rad(60.0 * vertex_index)
+	return Vector2(cos(angle), sin(angle)) * radius
+
+
+static func board_pixel_bounds(radius: float) -> Rect2:
+	var min_x := INF
+	var min_y := INF
+	var max_x := -INF
+	var max_y := -INF
+
+	for hex_index in range(HEX_COUNT):
+		var center := pixel_center(hex_index, radius, Vector2.ZERO)
+		for i in range(6):
+			var point := center + hex_corner_offset(i, radius)
+			min_x = min(min_x, point.x)
+			min_y = min(min_y, point.y)
+			max_x = max(max_x, point.x)
+			max_y = max(max_y, point.y)
+
+	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
 
 
 static func hex_number(hex_index: int) -> int:
-	return HEX_NUMBERS.get(hex_index, hex_index + 1)
-
-
-static func hex_index_for_number(number: int) -> int:
-	for hex_index in HEX_NUMBERS.keys():
-		if HEX_NUMBERS[hex_index] == number:
-			return hex_index
-	return number - 1
+	var labels: Array = labels_for(hex_index)
+	if labels.is_empty():
+		return hex_index + 1
+	return int(labels[0])
 
 
 static func is_valid_reject_placement(card: Dictionary, hex_index: int) -> bool:
@@ -75,16 +211,13 @@ static func is_valid_reject_placement(card: Dictionary, hex_index: int) -> bool:
 		return true
 
 	var rank_number := int(rank)
-	return rank_number >= 1 and rank_number <= 9 and hex_number(hex_index) == rank_number
+	return rank_number in labels_for(hex_index)
 
 
 func duplicate_state() -> Array:
 	var copy: Array = []
 	for hex in hexes:
-		copy.append({
-			"cubes": hex["cubes"].duplicate(true),
-			"carts": hex["carts"].duplicate(true),
-		})
+		copy.append(_duplicate_hex(hex))
 	return copy
 
 
@@ -92,15 +225,9 @@ func load_state(state: Array) -> void:
 	hexes.clear()
 	for hex in state:
 		if hex.has("cubes"):
-			hexes.append({
-				"cubes": hex["cubes"].duplicate(true),
-				"carts": hex["carts"].duplicate(true),
-			})
+			hexes.append(_duplicate_hex(hex))
 		else:
-			hexes.append({
-				"cubes": hex.duplicate(true),
-				"carts": RemixRules.empty_supply(),
-			})
+			hexes.append(_empty_hex())
 
 
 func are_adjacent(a: int, b: int) -> bool:
@@ -125,12 +252,16 @@ func controls_hex(faction: int, hex_index: int) -> bool:
 	return true
 
 
-func cart_can_advance(from_hex: int, to_hex: int) -> bool:
+func cart_can_advance(from_hex: int, to_hex: int, origin_hex: int) -> bool:
 	if not are_adjacent(from_hex, to_hex):
 		return false
 
-	var from_distance := int(_distance_to_east.get(from_hex, 999))
-	var to_distance := int(_distance_to_east.get(to_hex, 999))
+	var goal_hex := int(CART_GOALS.get(origin_hex, -1))
+	if goal_hex < 0:
+		return false
+
+	var from_distance := _distance_to_hex(from_hex, goal_hex)
+	var to_distance := _distance_to_hex(to_hex, goal_hex)
 	return to_distance < from_distance
 
 
@@ -174,10 +305,15 @@ func push(faction: int, from_hex: int, to_hex: int) -> bool:
 		hexes[to_hex]["cubes"][faction] = int(hexes[to_hex]["cubes"].get(faction, 0)) + 1
 		moved = true
 
-	if int(hexes[from_hex]["carts"].get(faction, 0)) > 0 and cart_can_advance(from_hex, to_hex):
-		hexes[from_hex]["carts"][faction] -= 1
-		hexes[to_hex]["carts"][faction] = int(hexes[to_hex]["carts"].get(faction, 0)) + 1
+	var cart_origins: Array = hexes[from_hex]["carts"].get(faction, [])
+	for i in range(cart_origins.size()):
+		var origin_hex := int(cart_origins[i])
+		if not cart_can_advance(from_hex, to_hex, origin_hex):
+			continue
+		cart_origins.remove_at(i)
+		hexes[to_hex]["carts"][faction].append(origin_hex)
 		moved = true
+		break
 
 	return moved
 
@@ -195,16 +331,21 @@ func pull(faction: int, to_hex: int, from_hex: int) -> bool:
 		hexes[to_hex]["cubes"][faction] = int(hexes[to_hex]["cubes"].get(faction, 0)) + 1
 		moved = true
 
-	if int(hexes[from_hex]["carts"].get(faction, 0)) > 0 and cart_can_advance(from_hex, to_hex):
-		hexes[from_hex]["carts"][faction] -= 1
-		hexes[to_hex]["carts"][faction] = int(hexes[to_hex]["carts"].get(faction, 0)) + 1
+	var cart_origins: Array = hexes[from_hex]["carts"].get(faction, [])
+	for i in range(cart_origins.size()):
+		var origin_hex := int(cart_origins[i])
+		if not cart_can_advance(from_hex, to_hex, origin_hex):
+			continue
+		cart_origins.remove_at(i)
+		hexes[to_hex]["carts"][faction].append(origin_hex)
 		moved = true
+		break
 
 	return moved
 
 
 func create_cart(faction: int, hex_index: int) -> bool:
-	if hex_index not in WEST_HEXES:
+	if hex_index not in MOUNTAIN_HEXES:
 		return false
 	if not controls_hex(faction, hex_index):
 		return false
@@ -212,7 +353,7 @@ func create_cart(faction: int, hex_index: int) -> bool:
 		return false
 
 	hexes[hex_index]["cubes"][faction] -= 1
-	hexes[hex_index]["carts"][faction] = int(hexes[hex_index]["carts"].get(faction, 0)) + 1
+	hexes[hex_index]["carts"][faction].append(hex_index)
 	return true
 
 
@@ -223,13 +364,16 @@ func score_carts_on_goal() -> Dictionary:
 		Factions.Id.DIAMONDS: 0,
 	}
 
-	for hex_index in EAST_HEXES:
+	for hex_index in range(HEX_COUNT):
 		for faction in Factions.ALL:
-			var cart_count := int(hexes[hex_index]["carts"].get(faction, 0))
-			if cart_count <= 0:
-				continue
-			scored[faction] += cart_count
-			hexes[hex_index]["carts"][faction] = 0
+			var origins: Array = hexes[hex_index]["carts"].get(faction, [])
+			var remaining: Array = []
+			for origin_hex in origins:
+				if int(CART_GOALS.get(int(origin_hex), -1)) == hex_index:
+					scored[faction] += 1
+				else:
+					remaining.append(origin_hex)
+			hexes[hex_index]["carts"][faction] = remaining
 
 	return scored
 
@@ -252,25 +396,38 @@ func add_cube(faction: int, hex_index: int) -> bool:
 	return true
 
 
-func _compute_distances_to_east() -> Dictionary:
-	var distances: Dictionary = {}
-	var queue: Array = []
+func _distance_to_hex(from_hex: int, to_hex: int) -> int:
+	var cache_key := "%d_%d" % [from_hex, to_hex]
+	if _distance_cache.has(cache_key):
+		return int(_distance_cache[cache_key])
 
-	for hex_index in EAST_HEXES:
-		distances[hex_index] = 0
-		queue.append(hex_index)
-
+	var distances: Dictionary = {from_hex: 0}
+	var queue: Array = [from_hex]
 	var head := 0
 	while head < queue.size():
 		var current: int = queue[head]
 		head += 1
+		if current == to_hex:
+			break
 		for neighbor in ADJACENCY.get(current, []):
 			if distances.has(neighbor):
 				continue
 			distances[neighbor] = int(distances[current]) + 1
 			queue.append(neighbor)
 
-	return distances
+	_distance_cache[cache_key] = distances.get(to_hex, 999)
+	return int(_distance_cache[cache_key])
+
+
+func _duplicate_hex(hex: Dictionary) -> Dictionary:
+	var carts_copy: Dictionary = {}
+	for faction in Factions.ALL:
+		carts_copy[faction] = hex["carts"].get(faction, []).duplicate()
+
+	return {
+		"cubes": hex["cubes"].duplicate(true),
+		"carts": carts_copy,
+	}
 
 
 func _empty_hex() -> Dictionary:
@@ -281,8 +438,8 @@ func _empty_hex() -> Dictionary:
 			Factions.Id.DIAMONDS: 0,
 		},
 		"carts": {
-			Factions.Id.CLUBS: 0,
-			Factions.Id.HEARTS: 0,
-			Factions.Id.DIAMONDS: 0,
+			Factions.Id.CLUBS: [],
+			Factions.Id.HEARTS: [],
+			Factions.Id.DIAMONDS: [],
 		},
 	}

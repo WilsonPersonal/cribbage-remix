@@ -64,6 +64,7 @@ var discard_ready: Dictionary = {}
 
 var _board := HexBoard.new()
 var _deck: Array = []
+var _board_setup_complete: bool = false
 
 
 func setup_offline_session(player_one_name: String = "Player 1", player_two_name: String = "Player 2") -> void:
@@ -80,7 +81,7 @@ func setup_offline_session(player_one_name: String = "Player 1", player_two_name
 	register_player(1, player_one_name)
 	register_player(2, player_two_name)
 	set_active_control_peer(1)
-	_broadcast_message("Offline debug: switch players to control each seat.")
+	_broadcast_message("Offline debug: switch players to control each seat. Dealing cards...")
 
 
 func get_control_peer_id() -> int:
@@ -126,7 +127,52 @@ func is_controlled_turn(peer_id: int) -> bool:
 func _action_peer_id() -> int:
 	if offline_debug_mode:
 		return active_control_peer_id
-	return multiplayer.get_remote_sender_id()
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		return multiplayer.get_unique_id()
+	return sender
+
+
+func submit_discard(card_indices: Array) -> void:
+	if multiplayer.is_server():
+		request_discard(card_indices)
+	else:
+		request_discard.rpc_id(1, card_indices)
+
+
+func submit_pegging_play(hand_index: int) -> void:
+	if multiplayer.is_server():
+		request_pegging_play(hand_index)
+	else:
+		request_pegging_play.rpc_id(1, hand_index)
+
+
+func submit_pegging_pass() -> void:
+	if multiplayer.is_server():
+		request_pegging_pass()
+	else:
+		request_pegging_pass.rpc_id(1)
+
+
+func submit_shop_purchase(faction_id: int) -> void:
+	if multiplayer.is_server():
+		request_shop_purchase(faction_id)
+	else:
+		request_shop_purchase.rpc_id(1, faction_id)
+
+
+func submit_end_shop_phase() -> void:
+	if multiplayer.is_server():
+		request_end_shop_phase()
+	else:
+		request_end_shop_phase.rpc_id(1)
+
+
+func submit_end_action_phase() -> void:
+	if multiplayer.is_server():
+		request_end_action_phase()
+	else:
+		request_end_action_phase.rpc_id(1)
 
 
 func _update_offline_active_player() -> void:
@@ -173,6 +219,7 @@ func register_player(peer_id: int, player_name: String = "") -> void:
 	_sync_action_points.rpc(action_points)
 	_sync_faction_actions.rpc(player_faction_actions)
 	_sync_faction_scores.rpc(faction_scores)
+	_ensure_board_setup()
 	_broadcast_board()
 
 
@@ -510,7 +557,8 @@ func get_winner_peer_id() -> int:
 
 func _deal_cards() -> void:
 	active_player_order = _sorted_peer_ids()
-	_deck = CribbageDeck.create_shuffled_deck()
+	if _deck.is_empty():
+		_deck = CribbageDeck.create_shuffled_deck()
 	crib.clear()
 	discard_ready.clear()
 
@@ -648,8 +696,16 @@ func _send_local_hand(peer_id: int, hand: Array) -> void:
 
 
 func _broadcast_pegging_state() -> void:
+	_apply_pegging_state(pegging_sequence, pegging_total, pegging_turn_peer)
 	_sync_pegging_state.rpc(pegging_sequence, pegging_total, pegging_turn_peer)
 	_update_offline_active_player()
+
+
+func _apply_pegging_state(sequence: Array, total: int, turn_peer: int) -> void:
+	pegging_sequence = sequence.duplicate(true)
+	pegging_total = total
+	pegging_turn_peer = turn_peer
+	pegging_state_updated.emit(pegging_sequence, pegging_total, pegging_turn_peer)
 
 
 func _broadcast_message(message: String) -> void:
@@ -743,7 +799,30 @@ func _spend_action_points(peer_id: int, cost: int) -> bool:
 
 
 func _broadcast_board() -> void:
-	_sync_board.rpc(_board.duplicate_state(), _board.get_faction_power())
+	var board_state := _board.duplicate_state()
+	var faction_power := _board.get_faction_power()
+	_apply_board(board_state, faction_power)
+	_sync_board.rpc(board_state, faction_power)
+
+
+func _ensure_board_setup() -> void:
+	if not NetworkManager.is_server():
+		return
+	if _board_setup_complete:
+		return
+	if get_player_count() < RemixRules.MIN_PLAYERS:
+		return
+
+	var setup_deck := CribbageDeck.create_shuffled_deck()
+	var drawn_cards := _board.setup_from_deck(setup_deck)
+	drawn_cards.shuffle()
+	_deck = drawn_cards
+	_board_setup_complete = true
+
+
+func _apply_board(board_state: Array, faction_power: Dictionary) -> void:
+	_board.load_state(board_state)
+	board_updated.emit(board_state, faction_power)
 
 
 func _set_phase(phase: Phase) -> void:
@@ -789,8 +868,7 @@ func _sync_faction_actions(actions: Dictionary) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _sync_board(board_state: Array, faction_power: Dictionary) -> void:
-	_board.load_state(board_state)
-	board_updated.emit(board_state, faction_power)
+	_apply_board(board_state, faction_power)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -824,10 +902,7 @@ func _sync_starter(card: Dictionary) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _sync_pegging_state(sequence: Array, total: int, turn_peer: int) -> void:
-	pegging_sequence = sequence.duplicate(true)
-	pegging_total = total
-	pegging_turn_peer = turn_peer
-	pegging_state_updated.emit(pegging_sequence, pegging_total, pegging_turn_peer)
+	_apply_pegging_state(sequence, total, turn_peer)
 
 
 @rpc("authority", "call_remote", "reliable")
