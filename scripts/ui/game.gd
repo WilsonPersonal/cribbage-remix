@@ -52,7 +52,9 @@ func _ready() -> void:
 	_refresh_ui()
 
 
-func _on_player_connected(_peer_id: int) -> void:
+func _on_player_connected(peer_id: int) -> void:
+	if NetworkManager.is_server():
+		GameState.register_player(peer_id)
 	_refresh_ui()
 
 
