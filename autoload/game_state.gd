@@ -24,6 +24,11 @@ signal action_points_updated(action_points: Dictionary)
 signal faction_actions_updated(faction_actions: Dictionary)
 signal faction_scores_updated(faction_scores: Dictionary)
 signal winner_decided(peer_id: int, faction_id: int)
+signal local_hand_updated(hand: Array)
+signal starter_updated(card: Dictionary)
+signal pegging_state_updated(sequence: Array, total: int, turn_peer: int)
+signal crib_count_updated(count: int)
+signal game_message(message: String)
 
 var current_phase: Phase = Phase.WAITING
 var round_number: int = 0
@@ -43,11 +48,18 @@ var faction_scores: Dictionary = {
 var dealer_peer_id: int = 1
 var crib_owner_peer_id: int = 0
 var hands: Dictionary = {}
+var local_hand: Array = []
 var crib: Array = []
 var starter_card: Dictionary = {}
 var pegging_total: int = 0
+var pegging_sequence: Array = []
+var pegging_turn_peer: int = 0
+var pegging_last_play_peer: int = 0
+var active_player_order: Array = []
+var discard_ready: Dictionary = {}
 
 var _board := HexBoard.new()
+var _deck: Array = []
 
 
 func register_player(peer_id: int, player_name: String = "") -> void:
@@ -95,19 +107,136 @@ func start_new_round() -> void:
 		_finish_game()
 		return
 
+	if get_player_count() < RemixRules.MIN_PLAYERS:
+		_broadcast_message("Need at least %d players to start a round." % RemixRules.MIN_PLAYERS)
+		return
+
 	round_number += 1
 	hands.clear()
+	local_hand.clear()
 	crib.clear()
 	starter_card.clear()
 	pegging_total = 0
+	pegging_sequence.clear()
+	pegging_turn_peer = 0
+	pegging_last_play_peer = 0
+	discard_ready.clear()
 	crib_owner_peer_id = 0
+	_deck.clear()
 
 	for peer_id in player_names.keys():
 		action_points[peer_id] = 0
 
+	_rotate_dealer()
 	_set_phase(Phase.DEAL)
+	_deal_cards()
 	round_started.emit(round_number)
 	_sync_action_points.rpc(action_points)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func request_discard(card_indices: Array) -> void:
+	if not multiplayer.is_server():
+		return
+	if current_phase != Phase.DISCARD_TO_CRIB:
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	if discard_ready.get(peer_id, false):
+		return
+
+	var expected := RemixRules.crib_discard_count(get_player_count())
+	if card_indices.size() != expected:
+		return
+
+	var hand: Array = hands.get(peer_id, []).duplicate(true)
+	if not _validate_card_indices(hand, card_indices):
+		return
+
+	var sorted_indices: Array = card_indices.duplicate()
+	sorted_indices.sort()
+	sorted_indices.reverse()
+	for index in sorted_indices:
+		crib.append(hand[index])
+		hand.remove_at(index)
+
+	hands[peer_id] = hand
+	discard_ready[peer_id] = true
+	_send_local_hand(peer_id, hand)
+	_sync_crib_count.rpc(crib.size())
+
+	if _all_players_discarded():
+		_cut_starter()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func request_pegging_play(hand_index: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if current_phase != Phase.PEGGING:
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	if peer_id != pegging_turn_peer:
+		return
+
+	var hand: Array = hands.get(peer_id, [])
+	if hand_index < 0 or hand_index >= hand.size():
+		return
+
+	var card: Dictionary = hand[hand_index]
+	if not PeggingRules.can_play(card, pegging_total):
+		return
+
+	hand.remove_at(hand_index)
+	hands[peer_id] = hand
+	pegging_sequence.append(card)
+	pegging_total += int(card.get("value", 0))
+	pegging_last_play_peer = peer_id
+
+	for event in PeggingRules.score_events(pegging_sequence, pegging_total):
+		grant_pegging_coins(peer_id, event)
+
+	_send_local_hand(peer_id, hand)
+
+	if pegging_total == PeggingRules.MAX_TOTAL:
+		pegging_total = 0
+		pegging_sequence.clear()
+
+	if _all_hands_empty():
+		_begin_show_hands()
+		return
+
+	_advance_pegging_turn()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func request_pegging_pass() -> void:
+	if not multiplayer.is_server():
+		return
+	if current_phase != Phase.PEGGING:
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	if peer_id != pegging_turn_peer:
+		return
+
+	var hand: Array = hands.get(peer_id, [])
+	if PeggingRules.has_any_play(hand, pegging_total):
+		return
+
+	if not pegging_sequence.is_empty() and pegging_last_play_peer != 0:
+		grant_pegging_coins(pegging_last_play_peer, "go")
+
+	pegging_sequence.clear()
+	pegging_total = 0
+
+	if _all_hands_empty():
+		_begin_show_hands()
+		return
+
+	pegging_turn_peer = _next_player_with_cards(pegging_last_play_peer)
+	_broadcast_pegging_state()
 
 
 func grant_actions_from_cards(peer_id: int, cards: Array, starter: Dictionary = {}) -> void:
@@ -128,16 +257,6 @@ func grant_pegging_coins(peer_id: int, event_type: String) -> void:
 		return
 
 	player_coins[peer_id] = player_coins.get(peer_id, 0) + gained
-	_sync_coins.rpc(player_coins)
-
-
-func grant_pegging_coin_amount(peer_id: int, amount: int) -> void:
-	if not multiplayer.is_server():
-		return
-	if amount <= 0:
-		return
-
-	player_coins[peer_id] = player_coins.get(peer_id, 0) + amount
 	_sync_coins.rpc(player_coins)
 
 
@@ -257,25 +376,11 @@ func request_crib_resolution(choices: Array) -> void:
 	_finish_round()
 
 
-func set_crib_owner(peer_id: int) -> void:
-	if not multiplayer.is_server():
-		return
-
-	crib_owner_peer_id = peer_id
-
-
 func advance_to_shop_phase() -> void:
 	if not multiplayer.is_server():
 		return
 
 	_set_phase(Phase.SHOP)
-
-
-func advance_to_action_phase() -> void:
-	if not multiplayer.is_server():
-		return
-
-	_set_phase(Phase.SPEND_ACTIONS)
 
 
 func get_total_faction_score() -> int:
@@ -314,6 +419,146 @@ func get_winner_peer_id() -> int:
 			best_peer_id = int(peer_id)
 
 	return best_peer_id
+
+
+func _deal_cards() -> void:
+	active_player_order = _sorted_peer_ids()
+	_deck = CribbageDeck.create_shuffled_deck()
+	crib.clear()
+	discard_ready.clear()
+
+	for peer_id in active_player_order:
+		var hand: Array = []
+		var card_count := RemixRules.cards_per_hand(active_player_order.size())
+		for _i in range(card_count):
+			if _deck.is_empty():
+				break
+			hand.append(_deck.pop_back())
+		hands[peer_id] = hand
+		_send_local_hand(int(peer_id), hand)
+
+	crib_owner_peer_id = dealer_peer_id
+	_sync_crib_count.rpc(crib.size())
+	_set_phase(Phase.DISCARD_TO_CRIB)
+	_broadcast_message("Discard %d cards to the crib." % RemixRules.crib_discard_count(active_player_order.size()))
+
+
+func _cut_starter() -> void:
+	if _deck.is_empty():
+		_broadcast_message("Deck empty; cannot cut starter.")
+		return
+
+	_set_phase(Phase.CUT_STARTER)
+	starter_card = _deck.pop_back()
+	_sync_starter.rpc(starter_card)
+	starter_updated.emit(starter_card)
+	_begin_pegging()
+
+
+func _begin_pegging() -> void:
+	pegging_sequence.clear()
+	pegging_total = 0
+	pegging_last_play_peer = 0
+	pegging_turn_peer = _non_dealer_peer()
+	_set_phase(Phase.PEGGING)
+	_broadcast_pegging_state()
+	_broadcast_message("Pegging phase: earn coins for pairs, 15s, 31, and go.")
+
+
+func _begin_show_hands() -> void:
+	_set_phase(Phase.SHOW_HANDS)
+
+	for peer_id in active_player_order:
+		var hand: Array = hands.get(peer_id, [])
+		grant_actions_from_cards(int(peer_id), hand, starter_card)
+
+	_broadcast_message("Show hands scored. Visit the shop, then spend actions.")
+	advance_to_shop_phase()
+
+
+func _advance_pegging_turn() -> void:
+	pegging_turn_peer = _next_player_with_cards(pegging_turn_peer)
+	_broadcast_pegging_state()
+
+
+func _next_player_with_cards(from_peer: int) -> int:
+	var peers: Array = active_player_order.duplicate()
+	var start_index := peers.find(from_peer)
+	if start_index < 0:
+		start_index = 0
+
+	for step in range(1, peers.size() + 1):
+		var candidate: int = peers[(start_index + step) % peers.size()]
+		if not hands.get(candidate, []).is_empty():
+			return candidate
+
+	return int(from_peer)
+
+
+func _all_players_discarded() -> bool:
+	for peer_id in active_player_order:
+		if not discard_ready.get(peer_id, false):
+			return false
+	return true
+
+
+func _all_hands_empty() -> bool:
+	for peer_id in active_player_order:
+		if not hands.get(peer_id, []).is_empty():
+			return false
+	return true
+
+
+func _validate_card_indices(hand: Array, indices: Array) -> bool:
+	var used: Dictionary = {}
+	for index in indices:
+		var card_index := int(index)
+		if card_index < 0 or card_index >= hand.size():
+			return false
+		if used.has(card_index):
+			return false
+		used[card_index] = true
+	return true
+
+
+func _rotate_dealer() -> void:
+	var peers := _sorted_peer_ids()
+	if peers.is_empty():
+		return
+	if dealer_peer_id == 0 or not peers.has(dealer_peer_id):
+		dealer_peer_id = peers[0]
+		return
+
+	var index := peers.find(dealer_peer_id)
+	dealer_peer_id = peers[(index + 1) % peers.size()]
+
+
+func _non_dealer_peer() -> int:
+	for peer_id in active_player_order:
+		if int(peer_id) != dealer_peer_id:
+			return int(peer_id)
+	return int(active_player_order[0])
+
+
+func _sorted_peer_ids() -> Array:
+	var peers: Array = player_names.keys()
+	peers.sort()
+	return peers
+
+
+func _send_local_hand(peer_id: int, hand: Array) -> void:
+	_sync_local_hand.rpc_id(peer_id, hand)
+	if peer_id == multiplayer.get_unique_id():
+		local_hand = hand.duplicate(true)
+		local_hand_updated.emit(local_hand)
+
+
+func _broadcast_pegging_state() -> void:
+	_sync_pegging_state.rpc(pegging_sequence, pegging_total, pegging_turn_peer)
+
+
+func _broadcast_message(message: String) -> void:
+	_sync_game_message.rpc(message)
 
 
 func _validate_crib_choices(choices: Array) -> bool:
@@ -467,3 +712,33 @@ func _sync_phase(phase: Phase) -> void:
 @rpc("authority", "call_remote", "reliable")
 func _sync_winner(peer_id: int, faction_id: int) -> void:
 	winner_decided.emit(peer_id, faction_id)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_local_hand(hand: Array) -> void:
+	local_hand = hand.duplicate(true)
+	local_hand_updated.emit(local_hand)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_starter(card: Dictionary) -> void:
+	starter_card = card
+	starter_updated.emit(card)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_pegging_state(sequence: Array, total: int, turn_peer: int) -> void:
+	pegging_sequence = sequence.duplicate(true)
+	pegging_total = total
+	pegging_turn_peer = turn_peer
+	pegging_state_updated.emit(pegging_sequence, pegging_total, pegging_turn_peer)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_crib_count(count: int) -> void:
+	crib_count_updated.emit(count)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_game_message(message: String) -> void:
+	game_message.emit(message)

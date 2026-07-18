@@ -15,6 +15,7 @@ extends Control
 @onready var buy_hearts_button: Button = $HUD/Margin/VBox/ShopButtons/BuyHeartsButton
 @onready var buy_diamonds_button: Button = $HUD/Margin/VBox/ShopButtons/BuyDiamondsButton
 @onready var board: Control = $Board
+@onready var card_panel: PanelContainer = $CardPlayPanel
 
 
 func _ready() -> void:
@@ -27,16 +28,23 @@ func _ready() -> void:
 	GameState.faction_actions_updated.connect(_on_faction_actions_updated)
 	GameState.faction_scores_updated.connect(_on_faction_scores_updated)
 	GameState.winner_decided.connect(_on_winner_decided)
+	GameState.game_message.connect(_on_game_message)
 	NetworkManager.player_connected.connect(_on_player_connected)
 	NetworkManager.player_disconnected.connect(_on_player_disconnected)
 
-	start_round_button.visible = NetworkManager.is_server()
+	start_round_button.visible = NetworkManager.is_server() and GameState.current_phase in [
+		GameState.Phase.WAITING,
+		GameState.Phase.ROUND_END,
+	]
 	start_round_button.pressed.connect(_on_start_round_pressed)
 	end_shop_button.pressed.connect(_on_end_shop_pressed)
 	end_actions_button.pressed.connect(_on_end_actions_pressed)
 	buy_clubs_button.pressed.connect(_on_buy_clubs_pressed)
 	buy_hearts_button.pressed.connect(_on_buy_hearts_pressed)
 	buy_diamonds_button.pressed.connect(_on_buy_diamonds_pressed)
+	card_panel.discard_submitted.connect(_on_discard_submitted)
+	card_panel.pegging_play_requested.connect(_on_pegging_play_requested)
+	card_panel.pegging_pass_requested.connect(_on_pegging_pass_requested)
 
 	if NetworkManager.is_server():
 		GameState.register_player(NetworkManager.get_local_peer_id())
@@ -79,6 +87,22 @@ func _on_buy_diamonds_pressed() -> void:
 
 func _buy_faction_action(faction_id: int) -> void:
 	GameState.request_shop_purchase.rpc_id(1, faction_id)
+
+
+func _on_discard_submitted(card_indices: Array) -> void:
+	GameState.request_discard.rpc_id(1, card_indices)
+
+
+func _on_pegging_play_requested(hand_index: int) -> void:
+	GameState.request_pegging_play.rpc_id(1, hand_index)
+
+
+func _on_pegging_pass_requested() -> void:
+	GameState.request_pegging_pass.rpc_id(1)
+
+
+func _on_game_message(message: String) -> void:
+	status_label.text = message
 
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:

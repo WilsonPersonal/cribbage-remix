@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3 uid="uid://card_widget"]
+
+[ext_resource type="Script" path="res://scripts/ui/card_widget.gd" id="1"]
+
+[node name="CardWidget" type="Button"]
+custom_minimum_size = Vector2(64, 92)
+script = ExtResource("1")

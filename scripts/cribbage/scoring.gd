@@ -31,6 +31,8 @@ static func pegging_event_coins(event_type: String) -> int:
 			return 2
 		"go":
 			return 1
+		"run":
+			return 1
 		_:
 			return 0
 
