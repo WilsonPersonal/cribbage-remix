@@ -47,3 +47,19 @@ static func empty_supply() -> Dictionary:
 
 static func empty_faction_actions() -> Dictionary:
 	return empty_influence()
+
+
+static func faction_dict_value(values: Dictionary, faction_id: int) -> int:
+	if values.has(faction_id):
+		return int(values[faction_id])
+	var string_key := str(faction_id)
+	if values.has(string_key):
+		return int(values[string_key])
+	return 0
+
+
+static func normalize_faction_dict(values: Dictionary) -> Dictionary:
+	var out := {}
+	for faction in Factions.ALL:
+		out[faction] = faction_dict_value(values, faction)
+	return out

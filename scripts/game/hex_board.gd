@@ -14,10 +14,10 @@ const PASTURE_SETUP_CUBES := 3
 const FOREST_SETUP_CUBES := 2
 const MOUNTAIN_SETUP_CUBES := 5
 
-## Map layout (see reference image):
+## Map layout (hex index -> terrain / labels):
 ##       [0 M 3,8]
 ##   [1 F5]   [8 F5]
-##       [4 P4]
+##       [4 P4] [2 P6]
 ##   [3 F5]   [5 P7]
 ## [6 M29]     [7 M110]
 const MOUNTAIN_HEXES := [0, 6, 7]
@@ -25,43 +25,44 @@ const FOREST_HEXES := [1, 3, 8]
 const PASTURE_HEXES := [2, 4, 5]
 
 const CART_GOALS := {
-	0: 8,
-	6: 3,
+	0: 3,
+	6: 8,
 	7: 1,
 }
 
 const BRIDGE_PAIRS := [
 	[0, 1],
-	[3, 7],
-	[6, 8],
+	[7, 8],
+	[6, 3],
 ]
+
+## Grid neighbors plus bridge links (0-1, 7-8, 6-3).
+const ADJACENCY := {
+	0: [1, 2, 8],
+	1: [0, 4, 6],
+	2: [0, 5, 8],
+	3: [5, 6, 7],
+	4: [1, 2, 5, 6],
+	5: [2, 3, 4, 7],
+	6: [1, 3, 4],
+	7: [3, 5, 8],
+	8: [0, 2, 7],
+}
 
 ## Axial coordinates (q, r) on a flat-top hex grid.
 ## Pixel spacing uses center-to-vertex radius R:
 ##   x = R * 1.5 * q
 ##   y = R * sqrt(3) * (r + q * 0.5)
 const HEX_COORDS := {
-	0: Vector2i(0, -1),
+	0: Vector2i(1, -2),
 	1: Vector2i(-1, 0),
-	2: Vector2i(2, 0),
-	3: Vector2i(0, 1),
+	2: Vector2i(1, -1),
+	3: Vector2i(1, 1),
 	4: Vector2i(0, 0),
 	5: Vector2i(1, 0),
-	6: Vector2i(-1, 2),
-	7: Vector2i(2, -1),
-	8: Vector2i(1, -1),
-}
-
-const ADJACENCY := {
-	0: [1, 2],
-	1: [0, 2, 4],
-	2: [0, 1, 3, 4, 5],
-	3: [2, 5, 7],
-	4: [1, 2, 6, 8],
-	5: [2, 3, 7, 8],
-	6: [4, 8],
-	7: [3, 5],
-	8: [4, 5, 6],
+	6: Vector2i(-1, 1),
+	7: Vector2i(2, 0),
+	8: Vector2i(2, -2),
 }
 
 const TERRAIN := {
@@ -239,14 +240,14 @@ func controls_hex(faction: int, hex_index: int) -> bool:
 		return false
 
 	var cubes: Dictionary = hexes[hex_index]["cubes"]
-	var faction_cubes := int(cubes.get(faction, 0))
+	var faction_cubes := RemixRules.faction_dict_value(cubes, faction)
 	if faction_cubes <= 0:
 		return false
 
 	for other in Factions.ALL:
 		if other == faction:
 			continue
-		if int(cubes.get(other, 0)) >= faction_cubes:
+		if int(RemixRules.faction_dict_value(cubes, other)) >= faction_cubes:
 			return false
 
 	return true
@@ -274,7 +275,7 @@ func get_faction_power() -> Dictionary:
 
 	for hex in hexes:
 		for faction in Factions.ALL:
-			power[faction] += int(hex["cubes"].get(faction, 0))
+			power[faction] += RemixRules.faction_dict_value(hex["cubes"], faction)
 
 	return power
 
@@ -292,7 +293,62 @@ func get_dominant_faction() -> int:
 	return best_faction
 
 
-func push(faction: int, from_hex: int, to_hex: int) -> bool:
+func get_controlling_faction(hex_index: int) -> int:
+	for faction in Factions.ALL:
+		if controls_hex(faction, hex_index):
+			return faction
+	return -1
+
+
+func cube_count_for(faction: int, hex_index: int) -> int:
+	if hex_index < 0 or hex_index >= HEX_COUNT:
+		return 0
+	return RemixRules.faction_dict_value(hexes[hex_index]["cubes"], faction)
+
+
+func _set_cube_count(faction: int, hex_index: int, count: int) -> void:
+	var cubes: Dictionary = hexes[hex_index]["cubes"]
+	cubes.erase(str(faction))
+	cubes[faction] = maxi(0, count)
+	hexes[hex_index]["cubes"] = RemixRules.normalize_faction_dict(cubes)
+
+
+func _add_cubes(faction: int, hex_index: int, amount: int) -> void:
+	if amount <= 0:
+		return
+	_set_cube_count(faction, hex_index, cube_count_for(faction, hex_index) + amount)
+
+
+func _remove_cubes(faction: int, hex_index: int, amount: int) -> void:
+	if amount <= 0:
+		return
+	_set_cube_count(faction, hex_index, cube_count_for(faction, hex_index) - amount)
+
+
+func advance_cart(faction: int, from_hex: int, to_hex: int) -> bool:
+	if not are_adjacent(from_hex, to_hex):
+		return false
+
+	var cart_origins: Array = hexes[from_hex]["carts"].get(faction, [])
+	for i in range(cart_origins.size()):
+		var origin_hex := int(cart_origins[i])
+		if not cart_can_advance(from_hex, to_hex, origin_hex):
+			continue
+		cart_origins.remove_at(i)
+		hexes[to_hex]["carts"][faction] = hexes[to_hex]["carts"].get(faction, [])
+		hexes[to_hex]["carts"][faction].append(origin_hex)
+		return true
+
+	return false
+
+
+func push(
+	faction: int,
+	from_hex: int,
+	to_hex: int,
+	cube_count: int = 1,
+	move_cart_also: bool = false
+) -> bool:
 	if not controls_hex(faction, from_hex):
 		return false
 	if not are_adjacent(from_hex, to_hex):
@@ -300,25 +356,27 @@ func push(faction: int, from_hex: int, to_hex: int) -> bool:
 
 	var moved := false
 
-	if int(hexes[from_hex]["cubes"].get(faction, 0)) > 0:
-		hexes[from_hex]["cubes"][faction] -= 1
-		hexes[to_hex]["cubes"][faction] = int(hexes[to_hex]["cubes"].get(faction, 0)) + 1
-		moved = true
+	if cube_count > 0:
+		var available := cube_count_for(faction, from_hex)
+		var move_count := mini(cube_count, available)
+		if move_count > 0:
+			_remove_cubes(faction, from_hex, move_count)
+			_add_cubes(faction, to_hex, move_count)
+			moved = true
 
-	var cart_origins: Array = hexes[from_hex]["carts"].get(faction, [])
-	for i in range(cart_origins.size()):
-		var origin_hex := int(cart_origins[i])
-		if not cart_can_advance(from_hex, to_hex, origin_hex):
-			continue
-		cart_origins.remove_at(i)
-		hexes[to_hex]["carts"][faction].append(origin_hex)
-		moved = true
-		break
+	if move_cart_also:
+		moved = advance_cart(faction, from_hex, to_hex) or moved
 
 	return moved
 
 
-func pull(faction: int, to_hex: int, from_hex: int) -> bool:
+func pull(
+	faction: int,
+	to_hex: int,
+	from_hex: int,
+	cube_count: int = 1,
+	move_cart_also: bool = false
+) -> bool:
 	if not controls_hex(faction, to_hex):
 		return false
 	if not are_adjacent(from_hex, to_hex):
@@ -326,22 +384,24 @@ func pull(faction: int, to_hex: int, from_hex: int) -> bool:
 
 	var moved := false
 
-	if int(hexes[from_hex]["cubes"].get(faction, 0)) > 0:
-		hexes[from_hex]["cubes"][faction] -= 1
-		hexes[to_hex]["cubes"][faction] = int(hexes[to_hex]["cubes"].get(faction, 0)) + 1
-		moved = true
+	if cube_count > 0:
+		var available := cube_count_for(faction, from_hex)
+		var move_count := mini(cube_count, available)
+		if move_count > 0:
+			_remove_cubes(faction, from_hex, move_count)
+			_add_cubes(faction, to_hex, move_count)
+			moved = true
 
-	var cart_origins: Array = hexes[from_hex]["carts"].get(faction, [])
-	for i in range(cart_origins.size()):
-		var origin_hex := int(cart_origins[i])
-		if not cart_can_advance(from_hex, to_hex, origin_hex):
-			continue
-		cart_origins.remove_at(i)
-		hexes[to_hex]["carts"][faction].append(origin_hex)
-		moved = true
-		break
+	if move_cart_also:
+		moved = advance_cart(faction, from_hex, to_hex) or moved
 
 	return moved
+
+
+func move_cart(faction: int, from_hex: int, to_hex: int) -> bool:
+	if not controls_hex(faction, from_hex):
+		return false
+	return advance_cart(faction, from_hex, to_hex)
 
 
 func create_cart(faction: int, hex_index: int) -> bool:
@@ -349,10 +409,10 @@ func create_cart(faction: int, hex_index: int) -> bool:
 		return false
 	if not controls_hex(faction, hex_index):
 		return false
-	if int(hexes[hex_index]["cubes"].get(faction, 0)) <= 0:
+	if cube_count_for(faction, hex_index) <= 0:
 		return false
 
-	hexes[hex_index]["cubes"][faction] -= 1
+	_remove_cubes(faction, hex_index, 1)
 	hexes[hex_index]["carts"][faction].append(hex_index)
 	return true
 
@@ -381,10 +441,10 @@ func score_carts_on_goal() -> Dictionary:
 func remove_cube(faction: int, hex_index: int) -> bool:
 	if hex_index < 0 or hex_index >= HEX_COUNT:
 		return false
-	if int(hexes[hex_index]["cubes"].get(faction, 0)) <= 0:
+	if cube_count_for(faction, hex_index) <= 0:
 		return false
 
-	hexes[hex_index]["cubes"][faction] -= 1
+	_remove_cubes(faction, hex_index, 1)
 	return true
 
 
@@ -392,7 +452,7 @@ func add_cube(faction: int, hex_index: int) -> bool:
 	if hex_index < 0 or hex_index >= HEX_COUNT:
 		return false
 
-	hexes[hex_index]["cubes"][faction] = int(hexes[hex_index]["cubes"].get(faction, 0)) + 1
+	_add_cubes(faction, hex_index, 1)
 	return true
 
 
@@ -425,7 +485,7 @@ func _duplicate_hex(hex: Dictionary) -> Dictionary:
 		carts_copy[faction] = hex["carts"].get(faction, []).duplicate()
 
 	return {
-		"cubes": hex["cubes"].duplicate(true),
+		"cubes": RemixRules.normalize_faction_dict(hex["cubes"]),
 		"carts": carts_copy,
 	}
 

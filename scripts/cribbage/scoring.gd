@@ -5,10 +5,10 @@ extends RefCounted
 ## Pegging uses coin rewards instead (see pegging_event_coins).
 
 
-static func count_actions_from_cards(cards: Array, starter: Dictionary = {}) -> int:
+static func count_actions_from_cards(cards: Array, cut_card: Dictionary = {}) -> int:
 	var all_cards := cards.duplicate()
-	if not starter.is_empty():
-		all_cards.append(starter)
+	if not cut_card.is_empty():
+		all_cards.append(cut_card)
 
 	return (
 		_count_pair_actions(all_cards)

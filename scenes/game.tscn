@@ -27,7 +27,7 @@ layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_bottom = -230.0
+	offset_bottom = -200.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("2_board")
@@ -39,7 +39,7 @@ anchor_left = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
 offset_left = -340.0
-offset_bottom = -230.0
+	offset_bottom = -200.0
 grow_horizontal = 0
 grow_vertical = 2
 
@@ -147,6 +147,82 @@ layout_mode = 2
 visible = false
 text = "End Shop Phase"
 
+[node name="ActionPanel" type="VBoxContainer" parent="HUD/Margin/VBox"]
+layout_mode = 2
+visible = false
+theme_override_constants/separation = 6
+
+[node name="ActionsLeftBigLabel" type="Label" parent="HUD/Margin/VBox/ActionPanel"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "— actions left"
+horizontal_alignment = 1
+
+[node name="ActionHelpLabel" type="Label" parent="HUD/Margin/VBox/ActionPanel"]
+visible = false
+layout_mode = 2
+
+[node name="FactionButtons" type="HBoxContainer" parent="HUD/Margin/VBox/ActionPanel"]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="ClubsFactionButton" type="Button" parent="HUD/Margin/VBox/ActionPanel/FactionButtons"]
+layout_mode = 2
+text = "Clubs"
+
+[node name="HeartsFactionButton" type="Button" parent="HUD/Margin/VBox/ActionPanel/FactionButtons"]
+layout_mode = 2
+text = "Hearts"
+
+[node name="DiamondsFactionButton" type="Button" parent="HUD/Margin/VBox/ActionPanel/FactionButtons"]
+layout_mode = 2
+text = "Diamonds"
+
+[node name="ActionButtons" type="HBoxContainer" parent="HUD/Margin/VBox/ActionPanel"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="PushButton" type="Button" parent="HUD/Margin/VBox/ActionPanel/ActionButtons"]
+layout_mode = 2
+text = "Push"
+
+[node name="PullButton" type="Button" parent="HUD/Margin/VBox/ActionPanel/ActionButtons"]
+layout_mode = 2
+text = "Pull"
+
+[node name="CartButton" type="Button" parent="HUD/Margin/VBox/ActionPanel/ActionButtons"]
+layout_mode = 2
+text = "Cart"
+
+[node name="CubeCountRow" type="HBoxContainer" parent="HUD/Margin/VBox/ActionPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="CubeCountLabel" type="Label" parent="HUD/Margin/VBox/ActionPanel/CubeCountRow"]
+layout_mode = 2
+text = "Cubes to move:"
+
+[node name="CubeCountSpin" type="SpinBox" parent="HUD/Margin/VBox/ActionPanel/CubeCountRow"]
+layout_mode = 2
+min_value = 1.0
+max_value = 20.0
+value = 1.0
+rounded = true
+
+[node name="MoveCartCheck" type="CheckBox" parent="HUD/Margin/VBox/ActionPanel/CubeCountRow"]
+layout_mode = 2
+text = "Move cart"
+
+[node name="UndoActionButton" type="Button" parent="HUD/Margin/VBox/ActionPanel"]
+layout_mode = 2
+disabled = true
+text = "Undo Last Action"
+
+[node name="ClearActionButton" type="Button" parent="HUD/Margin/VBox/ActionPanel"]
+layout_mode = 2
+text = "Clear Selection"
+
 [node name="EndActionsButton" type="Button" parent="HUD/Margin/VBox"]
 layout_mode = 2
 visible = false
@@ -158,7 +234,7 @@ anchors_preset = 12
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_top = -220.0
+offset_top = -200.0
 offset_right = -350.0
 grow_horizontal = 2
 grow_vertical = 0

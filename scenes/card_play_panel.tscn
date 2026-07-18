@@ -7,7 +7,7 @@ anchors_preset = 12
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_top = -220.0
+offset_top = -200.0
 grow_horizontal = 2
 grow_vertical = 0
 script = ExtResource("1_card_play")
@@ -27,9 +27,9 @@ theme_override_constants/separation = 6
 layout_mode = 2
 text = "Cards will appear here during a round."
 
-[node name="StarterLabel" type="Label" parent="Margin/VBox"]
+[node name="CutCardLabel" type="Label" parent="Margin/VBox"]
 layout_mode = 2
-text = "Starter: (not cut yet)"
+text = "Cut card: (not cut yet)"
 
 [node name="PeggingLabel" type="Label" parent="Margin/VBox"]
 layout_mode = 2
@@ -56,6 +56,36 @@ theme_override_constants/separation = 4
 [node name="HandContainer" type="HBoxContainer" parent="Margin/VBox"]
 layout_mode = 2
 theme_override_constants/separation = 4
+
+[node name="CribPanel" type="VBoxContainer" parent="Margin/VBox"]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="CribHelpLabel" type="Label" parent="Margin/VBox/CribPanel"]
+layout_mode = 2
+text = "Select a crib card, choose Accept or Reject, then click a hex."
+
+[node name="CribContainer" type="HBoxContainer" parent="Margin/VBox/CribPanel"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="CribActionRow" type="HBoxContainer" parent="Margin/VBox/CribPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="CribAcceptButton" type="Button" parent="Margin/VBox/CribPanel/CribActionRow"]
+layout_mode = 2
+text = "Accept (remove cube)"
+
+[node name="CribRejectButton" type="Button" parent="Margin/VBox/CribPanel/CribActionRow"]
+layout_mode = 2
+text = "Reject (place cube)"
+
+[node name="ConfirmCribButton" type="Button" parent="Margin/VBox/CribPanel/CribActionRow"]
+layout_mode = 2
+disabled = true
+text = "Confirm Crib"
 
 [node name="ActionRow" type="HBoxContainer" parent="Margin/VBox"]
 layout_mode = 2
