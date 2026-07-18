@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">
+  <rect width="128" height="128" rx="16" fill="#2b2f38"/>
+  <rect x="24" y="40" width="80" height="48" rx="8" fill="#4a7c59"/>
+  <circle cx="40" cy="64" r="6" fill="#f2d16b"/>
+  <circle cx="64" cy="64" r="6" fill="#f2d16b"/>
+  <circle cx="88" cy="64" r="6" fill="#f2d16b"/>
+  <text x="64" y="28" text-anchor="middle" fill="#ffffff" font-family="Arial" font-size="14">CR</text>
+</svg>

@@ -1,0 +1,122 @@
+[gd_scene load_steps=3 format=3 uid="uid://cribbage_game"]
+
+[ext_resource type="Script" path="res://scripts/ui/game.gd" id="1_game"]
+[ext_resource type="Script" path="res://scripts/ui/hex_board_view.gd" id="2_board"]
+
+[node name="Game" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_game")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.1, 0.12, 0.16, 1)
+
+[node name="Board" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("2_board")
+
+[node name="HUD" type="PanelContainer" parent="."]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -340.0
+offset_bottom = 620.0
+grow_horizontal = 0
+
+[node name="Margin" type="MarginContainer" parent="HUD"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 16
+
+[node name="VBox" type="VBoxContainer" parent="HUD/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Cribbage Remix"
+
+[node name="StatusLabel" type="Label" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Connecting..."
+autowrap_mode = 3
+
+[node name="PhaseLabel" type="Label" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Phase: Waiting"
+
+[node name="CoinsLabel" type="Label" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Coins: none yet"
+autowrap_mode = 3
+
+[node name="ActionPointsLabel" type="Label" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Actions: none yet"
+autowrap_mode = 3
+
+[node name="FactionActionsLabel" type="Label" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Faction shop actions: none yet"
+autowrap_mode = 3
+
+[node name="InfluenceLabel" type="Label" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Influence: waiting for players..."
+autowrap_mode = 3
+
+[node name="FactionScoresLabel" type="Label" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Faction scores:"
+autowrap_mode = 3
+
+[node name="ShopButtons" type="HBoxContainer" parent="HUD/Margin/VBox"]
+layout_mode = 2
+visible = false
+
+[node name="BuyClubsButton" type="Button" parent="HUD/Margin/VBox/ShopButtons"]
+layout_mode = 2
+visible = false
+text = "Buy Clubs (3)"
+
+[node name="BuyHeartsButton" type="Button" parent="HUD/Margin/VBox/ShopButtons"]
+layout_mode = 2
+visible = false
+text = "Buy Hearts (3)"
+
+[node name="BuyDiamondsButton" type="Button" parent="HUD/Margin/VBox/ShopButtons"]
+layout_mode = 2
+visible = false
+text = "Buy Diamonds (3)"
+
+[node name="StartRoundButton" type="Button" parent="HUD/Margin/VBox"]
+layout_mode = 2
+text = "Start Round (Host)"
+
+[node name="EndShopButton" type="Button" parent="HUD/Margin/VBox"]
+layout_mode = 2
+visible = false
+text = "End Shop Phase"
+
+[node name="EndActionsButton" type="Button" parent="HUD/Margin/VBox"]
+layout_mode = 2
+visible = false
+text = "End Action Phase"
