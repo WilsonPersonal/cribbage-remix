@@ -3,6 +3,7 @@ extends PanelContainer
 signal discard_submitted(card_indices: Array)
 signal pegging_play_requested(hand_index: int)
 signal pegging_pass_requested
+signal crib_hex_highlights_changed(target_hexes: Array)
 
 const CardWidgetScene := preload("res://scenes/card_widget.tscn")
 
@@ -45,6 +46,8 @@ func _ready() -> void:
 	crib_accept_button.pressed.connect(_on_crib_accept_pressed)
 	crib_reject_button.pressed.connect(_on_crib_reject_pressed)
 	confirm_crib_button.visible = false
+	crib_accept_button.toggle_mode = true
+	crib_reject_button.toggle_mode = true
 
 	GameState.local_hand_updated.connect(_on_local_hand_updated)
 	GameState.cut_card_updated.connect(_on_cut_card_updated)
@@ -67,17 +70,26 @@ func handle_crib_hex(hex_index: int) -> void:
 	if _selected_crib_card < 0:
 		crib_help_label.text = "Select a crib card first."
 		return
+	if not _crib_mode_selected:
+		crib_help_label.text = "Choose Accept or Reject first."
+		return
 	if _crib_choices.has(_selected_crib_card):
 		crib_help_label.text = "That card already has a placement. Select another."
 		return
 
 	var card: Dictionary = _crib_cards[_selected_crib_card]
 	if _pending_crib_accept:
+		if not _would_accept_be_valid():
+			crib_help_label.text = "You can only accept %d crib card(s)." % _required_accepts
+			return
 		var faction_id := GameState.get_card_faction_id(card)
 		if GameState.get_faction_cubes_on_hex(hex_index, faction_id) <= 0:
 			crib_help_label.text = "Accept: pick a hex with a %s cube." % Factions.name_for(faction_id)
 			return
 	else:
+		if not _would_reject_be_valid():
+			crib_help_label.text = "You must accept %d crib card(s)." % _required_accepts
+			return
 		if not HexBoard.is_valid_reject_placement(card, hex_index):
 			crib_help_label.text = "Reject: card rank must match a hex label (10s go anywhere)."
 			return
@@ -85,6 +97,8 @@ func handle_crib_hex(hex_index: int) -> void:
 	GameState.submit_crib_card_choice(_selected_crib_card, _pending_crib_accept, hex_index)
 	_selected_crib_card = -1
 	_clear_crib_placement_mode()
+	_update_crib_help()
+	_update_crib_action_buttons_visibility()
 
 
 func _on_confirm_discard_pressed() -> void:
@@ -101,36 +115,70 @@ func _on_pass_pressed() -> void:
 
 func _on_crib_accept_pressed() -> void:
 	if _selected_crib_card < 0:
-		crib_help_label.text = "Select a crib card, then click a hex with that faction's cube."
+		crib_help_label.text = "Select a crib card first."
+		return
+	if not _would_accept_be_valid():
+		crib_help_label.text = "You can only accept %d crib card(s)." % _required_accepts
 		return
 	_pending_crib_accept = true
 	_crib_mode_selected = true
 	_update_crib_action_button_styles()
-	crib_help_label.text = "Accept selected — click a hex with a matching cube."
+	_update_crib_hex_highlights()
+	_update_crib_mode_help()
 
 
 func _on_crib_reject_pressed() -> void:
 	if _selected_crib_card < 0:
-		crib_help_label.text = "Select a crib card, then click a valid hex for its rank."
+		crib_help_label.text = "Select a crib card first."
+		return
+	if not _would_reject_be_valid():
+		crib_help_label.text = "You must accept %d crib card(s)." % _required_accepts
 		return
 	_pending_crib_accept = false
 	_crib_mode_selected = true
 	_update_crib_action_button_styles()
-	crib_help_label.text = "Reject selected — click a hex matching the card rank."
+	_update_crib_hex_highlights()
+	_update_crib_mode_help()
+
+
+func _update_crib_mode_help() -> void:
+	if not _crib_mode_selected or _selected_crib_card < 0:
+		return
+	if _pending_crib_accept:
+		crib_help_label.text = "Accept — click a hex with a matching cube."
+	else:
+		crib_help_label.text = "Reject — click a hex matching the card rank."
 
 
 func _clear_crib_placement_mode() -> void:
 	_crib_mode_selected = false
 	_update_crib_action_button_styles()
+	_update_crib_hex_highlights()
 
 
 func _update_crib_action_button_styles() -> void:
-	crib_accept_button.modulate = (
-		Color(1.0, 1.0, 0.75) if _crib_mode_selected and _pending_crib_accept else Color.WHITE
-	)
-	crib_reject_button.modulate = (
-		Color(1.0, 1.0, 0.75) if _crib_mode_selected and not _pending_crib_accept else Color.WHITE
-	)
+	var accept_active := _crib_mode_selected and _pending_crib_accept
+	var reject_active := _crib_mode_selected and not _pending_crib_accept
+	crib_accept_button.button_pressed = accept_active
+	crib_reject_button.button_pressed = reject_active
+	if not _crib_mode_selected:
+		crib_accept_button.release_focus()
+		crib_reject_button.release_focus()
+
+
+func _update_crib_hex_highlights() -> void:
+	var hexes: Array = []
+	if (
+		_crib_mode_selected
+		and not _pending_crib_accept
+		and _selected_crib_card >= 0
+		and _selected_crib_card < _crib_cards.size()
+	):
+		var card: Dictionary = _crib_cards[_selected_crib_card]
+		for hex_index in range(HexBoard.HEX_COUNT):
+			if HexBoard.is_valid_reject_placement(card, hex_index):
+				hexes.append(hex_index)
+	crib_hex_highlights_changed.emit(hexes)
 
 
 func _on_local_hand_updated(hand: Array) -> void:
@@ -160,6 +208,7 @@ func _on_crib_resolution_updated(crib_cards: Array, resolved: Dictionary, _resol
 	_clear_crib_placement_mode()
 	_refresh_crib_display()
 	_update_crib_help()
+	_update_crib_action_buttons_visibility()
 
 
 func _on_pegging_state_updated(sequence: Array, total: int, turn_peer: int) -> void:
@@ -184,6 +233,8 @@ func _on_phase_changed(phase: GameState.Phase) -> void:
 	_update_action_buttons()
 	_update_pegging_visibility(phase)
 	_update_crib_visibility(phase)
+	if not _is_crib_resolution_phase():
+		crib_hex_highlights_changed.emit([])
 	match phase:
 		GameState.Phase.SETUP_MINI_CRIB:
 			message_label.text = "Setup: resolve mini cribs before dealing hands."
@@ -314,6 +365,7 @@ func _on_crib_card_pressed(index: int) -> void:
 	_clear_crib_placement_mode()
 	_refresh_crib_display()
 	_update_crib_help()
+	_update_crib_action_buttons_visibility()
 
 
 func _toggle_discard_selection(index: int) -> void:
@@ -333,13 +385,78 @@ func _is_crib_resolution_phase() -> bool:
 func _update_crib_visibility(phase: GameState.Phase) -> void:
 	var show_crib := _is_crib_resolution_phase() and GameState.is_crib_resolver_for_control()
 	crib_panel.visible = show_crib
-	crib_action_row.visible = show_crib
 	if phase == GameState.Phase.SETUP_MINI_CRIB:
 		_required_accepts = 1
 	elif phase == GameState.Phase.RESOLVE_CRIB:
 		_required_accepts = 2
 	else:
 		_required_accepts = 0
+	_update_crib_action_buttons_visibility()
+
+
+func _update_crib_action_buttons_visibility() -> void:
+	var show_crib := _is_crib_resolution_phase() and GameState.is_crib_resolver_for_control()
+	var card_selected := (
+		_selected_crib_card >= 0
+		and _selected_crib_card < _crib_cards.size()
+		and not _crib_choices.has(_selected_crib_card)
+	)
+
+	if not show_crib or not card_selected:
+		crib_action_row.visible = false
+		crib_accept_button.visible = false
+		crib_reject_button.visible = false
+		_clear_crib_placement_mode()
+		return
+
+	var can_accept := _would_accept_be_valid()
+	var can_reject := _would_reject_be_valid()
+
+	if can_accept and not can_reject:
+		_pending_crib_accept = true
+		_crib_mode_selected = true
+	elif can_reject and not can_accept:
+		_pending_crib_accept = false
+		_crib_mode_selected = true
+	elif not can_accept and not can_reject:
+		crib_action_row.visible = false
+		crib_accept_button.visible = false
+		crib_reject_button.visible = false
+		_clear_crib_placement_mode()
+		return
+
+	crib_accept_button.visible = can_accept
+	crib_reject_button.visible = can_reject
+	crib_action_row.visible = can_accept or can_reject
+	_update_crib_action_button_styles()
+	_update_crib_hex_highlights()
+	_update_crib_mode_help()
+
+
+func _current_accept_count() -> int:
+	var accept_count := 0
+	for choice in _crib_choices.values():
+		if bool(choice.get("accept", false)):
+			accept_count += 1
+	return accept_count
+
+
+func _remaining_unplaced_crib_cards() -> int:
+	return _crib_cards.size() - _crib_choices.size()
+
+
+func _would_accept_be_valid() -> bool:
+	var accepts := _current_accept_count()
+	if accepts >= _required_accepts:
+		return false
+	var remaining_after := _remaining_unplaced_crib_cards() - 1
+	return accepts + 1 + remaining_after >= _required_accepts
+
+
+func _would_reject_be_valid() -> bool:
+	var accepts := _current_accept_count()
+	var remaining_after := _remaining_unplaced_crib_cards() - 1
+	return accepts + remaining_after >= _required_accepts
 
 
 func _update_crib_help() -> void:

@@ -13,6 +13,7 @@ const HEX_COUNT := 9
 const PASTURE_SETUP_CUBES := 3
 const FOREST_SETUP_CUBES := 2
 const MOUNTAIN_SETUP_CUBES := 5
+const MAX_CUBES_PER_FACTION_PER_HEX := 5
 
 ## Map layout (hex index -> terrain / labels):
 ##       [0 M 3,8]
@@ -306,6 +307,14 @@ func cube_count_for(faction: int, hex_index: int) -> int:
 	return RemixRules.faction_dict_value(hexes[hex_index]["cubes"], faction)
 
 
+func available_cube_space(faction: int, hex_index: int) -> int:
+	return maxi(0, MAX_CUBES_PER_FACTION_PER_HEX - cube_count_for(faction, hex_index))
+
+
+func can_add_cubes(faction: int, hex_index: int, amount: int = 1) -> bool:
+	return available_cube_space(faction, hex_index) >= amount
+
+
 func _set_cube_count(faction: int, hex_index: int, count: int) -> void:
 	var cubes: Dictionary = hexes[hex_index]["cubes"]
 	cubes.erase(str(faction))
@@ -316,7 +325,10 @@ func _set_cube_count(faction: int, hex_index: int, count: int) -> void:
 func _add_cubes(faction: int, hex_index: int, amount: int) -> void:
 	if amount <= 0:
 		return
-	_set_cube_count(faction, hex_index, cube_count_for(faction, hex_index) + amount)
+	var allowed := mini(amount, available_cube_space(faction, hex_index))
+	if allowed <= 0:
+		return
+	_set_cube_count(faction, hex_index, cube_count_for(faction, hex_index) + allowed)
 
 
 func _remove_cubes(faction: int, hex_index: int, amount: int) -> void:
@@ -358,7 +370,8 @@ func push(
 
 	if cube_count > 0:
 		var available := cube_count_for(faction, from_hex)
-		var move_count := mini(cube_count, available)
+		var space := available_cube_space(faction, to_hex)
+		var move_count := mini(cube_count, mini(available, space))
 		if move_count > 0:
 			_remove_cubes(faction, from_hex, move_count)
 			_add_cubes(faction, to_hex, move_count)
@@ -386,7 +399,8 @@ func pull(
 
 	if cube_count > 0:
 		var available := cube_count_for(faction, from_hex)
-		var move_count := mini(cube_count, available)
+		var space := available_cube_space(faction, to_hex)
+		var move_count := mini(cube_count, mini(available, space))
 		if move_count > 0:
 			_remove_cubes(faction, from_hex, move_count)
 			_add_cubes(faction, to_hex, move_count)
@@ -431,6 +445,7 @@ func score_carts_on_goal() -> Dictionary:
 			for origin_hex in origins:
 				if int(CART_GOALS.get(int(origin_hex), -1)) == hex_index:
 					scored[faction] += 1
+					_add_cubes(faction, hex_index, 1)
 				else:
 					remaining.append(origin_hex)
 			hexes[hex_index]["carts"][faction] = remaining
@@ -450,6 +465,8 @@ func remove_cube(faction: int, hex_index: int) -> bool:
 
 func add_cube(faction: int, hex_index: int) -> bool:
 	if hex_index < 0 or hex_index >= HEX_COUNT:
+		return false
+	if not can_add_cubes(faction, hex_index, 1):
 		return false
 
 	_add_cubes(faction, hex_index, 1)

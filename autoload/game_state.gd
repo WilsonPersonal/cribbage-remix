@@ -52,6 +52,12 @@ var faction_scores: Dictionary = {
 	Factions.Id.HEARTS: 0,
 	Factions.Id.DIAMONDS: 0,
 }
+var faction_score_recency: Dictionary = {
+	Factions.Id.CLUBS: 0,
+	Factions.Id.HEARTS: 0,
+	Factions.Id.DIAMONDS: 0,
+}
+var _faction_score_recency_counter: int = 0
 
 var dealer_peer_id: int = 1
 var crib_owner_peer_id: int = 0
@@ -69,6 +75,7 @@ var mini_crib_cards: Array = []
 var mini_crib_resolved: Dictionary = {}
 var end_crib_resolved: Dictionary = {}
 var crib_resolver_peer_id: int = 0
+var _mini_cribs_completed_for_round: bool = false
 var pegging_total: int = 0
 var pegging_sequence: Array = []
 var pegging_turn_peer: int = 0
@@ -344,7 +351,7 @@ func register_player(peer_id: int, player_name: String = "") -> void:
 	_sync_coins.rpc(player_coins)
 	_sync_action_points.rpc(action_points)
 	_sync_faction_actions.rpc(player_faction_actions)
-	_sync_faction_scores.rpc(faction_scores)
+	_sync_faction_scores.rpc(faction_scores, faction_score_recency)
 	_ensure_board_setup()
 	_broadcast_board()
 
@@ -373,7 +380,7 @@ func start_new_round() -> void:
 	hands.clear()
 	local_hand.clear()
 	crib.clear()
-	cut_card.clear()
+	_broadcast_cut_card_clear()
 	action_turn_peer_id = 0
 	action_players_finished.clear()
 	local_crib.clear()
@@ -383,6 +390,7 @@ func start_new_round() -> void:
 	mini_crib_resolved.clear()
 	end_crib_resolved.clear()
 	crib_resolver_peer_id = 0
+	_mini_cribs_completed_for_round = false
 	local_crib_resolved.clear()
 	pegging_total = 0
 	pegging_sequence.clear()
@@ -398,7 +406,12 @@ func start_new_round() -> void:
 
 	_rotate_dealer()
 	crib_owner_peer_id = dealer_peer_id
-	_begin_mini_crib_setup()
+	if round_number == 1:
+		_begin_mini_crib_setup()
+	else:
+		_mini_cribs_completed_for_round = true
+		_set_phase(Phase.DEAL)
+		_deal_cards()
 	round_started.emit(round_number)
 	_apply_action_points(action_points)
 	_sync_action_points.rpc(action_points)
@@ -495,6 +508,14 @@ func request_pegging_pass() -> void:
 
 	var hand: Array = hands.get(peer_id, [])
 	if PeggingRules.has_any_play(hand, pegging_total):
+		return
+
+	var forced_peer := _peer_who_must_play_after_pass(peer_id)
+	if forced_peer >= 0:
+		if not pegging_sequence.is_empty() and pegging_last_play_peer != 0:
+			grant_pegging_coins(pegging_last_play_peer, "go")
+		pegging_turn_peer = forced_peer
+		_broadcast_pegging_state()
 		return
 
 	if not pegging_sequence.is_empty() and pegging_last_play_peer != 0:
@@ -630,6 +651,8 @@ func request_faction_action(
 				return
 			var available_cubes := _board.cube_count_for(faction_id, cube_hex)
 			move_count = mini(cube_count, available_cubes)
+			var dest_hex := target_hex if action_type == ActionSystem.Type.PUSH else hex_index
+			move_count = mini(move_count, _board.available_cube_space(faction_id, dest_hex))
 			if move_count <= 0:
 				return
 		ActionSystem.Type.CREATE_CART:
@@ -707,10 +730,12 @@ func request_undo_action() -> void:
 	action_points = snapshot.get("action_points", action_points)
 	player_faction_actions = snapshot.get("player_faction_actions", player_faction_actions)
 	faction_scores = snapshot.get("faction_scores", faction_scores)
+	faction_score_recency = snapshot.get("faction_score_recency", faction_score_recency)
+	_faction_score_recency_counter = int(snapshot.get("faction_score_recency_counter", _faction_score_recency_counter))
 	_apply_action_points(action_points)
 	_sync_action_points.rpc(action_points)
 	_sync_faction_actions.rpc(player_faction_actions)
-	_sync_faction_scores.rpc(faction_scores)
+	_sync_faction_scores.rpc(faction_scores, faction_score_recency)
 	_broadcast_board()
 	_emit_undo_availability()
 
@@ -821,8 +846,8 @@ func _start_current_mini_crib() -> void:
 
 func _mini_crib_resolver_for_index(index: int) -> int:
 	if index == 1:
-		return dealer_peer_id
-	return _non_dealer_peer()
+		return int(dealer_peer_id)
+	return int(_non_dealer_peer())
 
 
 func _advance_mini_crib() -> void:
@@ -838,8 +863,10 @@ func _finish_mini_crib_setup() -> void:
 	mini_crib_resolved.clear()
 	mini_crib_resolving_peer = 0
 	crib_resolver_peer_id = 0
+	mini_crib_index = 0
 	local_crib.clear()
 	local_crib_resolved.clear()
+	_mini_cribs_completed_for_round = true
 	_set_phase(Phase.DEAL)
 	_deal_cards()
 
@@ -854,6 +881,7 @@ func _broadcast_crib_resolution_state(
 		local_crib = cards.duplicate(true)
 		local_crib_resolved = resolved.duplicate(true)
 		crib_resolution_updated.emit(local_crib, local_crib_resolved, resolver_peer)
+		_update_offline_active_player()
 		return
 
 	if multiplayer.is_server():
@@ -878,14 +906,14 @@ func request_crib_card_choice(card_index: int, accept: bool, hex_index: int) -> 
 
 	match current_phase:
 		Phase.SETUP_MINI_CRIB:
-			if peer_id != mini_crib_resolving_peer:
+			if int(peer_id) != int(mini_crib_resolving_peer):
 				return
 			cards = mini_crib_cards
 			resolved = mini_crib_resolved
 			required_accepts = 1
 			total_cards = MINI_CRIB_SIZE
 		Phase.RESOLVE_CRIB:
-			if peer_id != crib_owner_peer_id:
+			if int(peer_id) != int(crib_owner_peer_id):
 				return
 			cards = crib
 			resolved = end_crib_resolved
@@ -910,13 +938,20 @@ func request_crib_card_choice(card_index: int, accept: bool, hex_index: int) -> 
 		"accept": accept,
 		"hex_index": hex_index,
 	}
-	if temp_resolved.size() == total_cards:
-		if _count_accepts_in_resolved(temp_resolved) != required_accepts:
+	if not _is_valid_crib_resolution_progress(
+		resolved,
+		temp_resolved[card_index],
+		required_accepts,
+		total_cards
+	):
+		if accept and _count_accepts_in_resolved(temp_resolved) > required_accepts:
+			_broadcast_message("You can only accept %d crib card(s)." % required_accepts)
+		else:
 			_broadcast_message(
 				"Need exactly %d accept(s) and %d reject(s)."
 				% [required_accepts, total_cards - required_accepts]
 			)
-			return
+		return
 
 	var influence: Dictionary = RemixRules.normalize_faction_dict(
 		player_influence.get(peer_id, RemixRules.empty_influence())
@@ -930,7 +965,7 @@ func request_crib_card_choice(card_index: int, accept: bool, hex_index: int) -> 
 	resolved[card_index] = temp_resolved[card_index]
 	player_influence[peer_id] = influence
 	player_supply[peer_id] = supply
-	_sync_influence.rpc(player_influence)
+	_broadcast_influence()
 	_sync_supply.rpc(player_supply)
 	_broadcast_board()
 
@@ -955,6 +990,30 @@ func _count_accepts_in_resolved(resolved: Dictionary) -> int:
 	return accept_count
 
 
+func _is_valid_crib_resolution_progress(
+	resolved: Dictionary,
+	new_choice: Dictionary,
+	required_accepts: int,
+	total_cards: int
+) -> bool:
+	var temp_resolved: Dictionary = resolved.duplicate(true)
+	temp_resolved[int(new_choice.get("card_index", -1))] = new_choice
+
+	var accept_count := _count_accepts_in_resolved(temp_resolved)
+	if accept_count > required_accepts:
+		return false
+
+	var placed_count := temp_resolved.size()
+	var remaining_slots := total_cards - placed_count
+	if accept_count + remaining_slots < required_accepts:
+		return false
+
+	if placed_count == total_cards:
+		return accept_count == required_accepts
+
+	return true
+
+
 func advance_to_shop_phase() -> void:
 	if not multiplayer.is_server():
 		return
@@ -968,6 +1027,22 @@ func get_total_faction_score() -> int:
 	for faction in Factions.ALL:
 		total += int(faction_scores.get(faction, 0))
 	return total
+
+
+func get_factions_by_rank() -> Array:
+	var ranked: Array = Factions.ALL.duplicate()
+	ranked.sort_custom(func(a: int, b: int) -> bool:
+		var score_a := int(faction_scores.get(a, 0))
+		var score_b := int(faction_scores.get(b, 0))
+		if score_a != score_b:
+			return score_a > score_b
+		var recency_a := int(faction_score_recency.get(a, 0))
+		var recency_b := int(faction_score_recency.get(b, 0))
+		if recency_a != recency_b:
+			return recency_a > recency_b
+		return a < b
+	)
+	return ranked
 
 
 func get_player_count() -> int:
@@ -1002,6 +1077,10 @@ func get_winner_peer_id() -> int:
 
 
 func _deal_cards() -> void:
+	if round_number == 1 and not _mini_cribs_completed_for_round:
+		_begin_mini_crib_setup()
+		return
+
 	active_player_order = _sorted_peer_ids()
 	if _deck.is_empty():
 		_deck = CribbageDeck.create_shuffled_deck()
@@ -1035,6 +1114,12 @@ func _cut_card() -> void:
 	_sync_cut_card.rpc(cut_card)
 	cut_card_updated.emit(cut_card)
 	_begin_pegging()
+
+
+func _broadcast_cut_card_clear() -> void:
+	cut_card.clear()
+	cut_card_updated.emit({})
+	_sync_cut_card.rpc({})
 
 
 func _begin_pegging() -> void:
@@ -1102,6 +1187,18 @@ func _next_player_with_cards(from_peer: int) -> int:
 		if not hands.get(candidate, []).is_empty():
 			return candidate
 
+	return -1
+
+
+func _peer_who_must_play_after_pass(passing_peer: int) -> int:
+	for candidate in active_player_order:
+		if int(candidate) == int(passing_peer):
+			continue
+		var other_hand: Array = hands.get(candidate, [])
+		if other_hand.is_empty():
+			continue
+		if PeggingRules.has_any_play(other_hand, pegging_total):
+			return int(candidate)
 	return -1
 
 
@@ -1240,6 +1337,8 @@ func _can_apply_crib_card(card: Dictionary, accept: bool, board_hex: int) -> boo
 	var faction_id := _card_faction_id(card)
 	if accept:
 		return _board.cube_count_for(faction_id, board_hex) > 0
+	if not _board.can_add_cubes(faction_id, board_hex, 1):
+		return false
 	return HexBoard.is_valid_reject_placement(card, board_hex)
 
 
@@ -1334,6 +1433,8 @@ func _record_action_undo_snapshot() -> void:
 		"action_points": action_points.duplicate(true),
 		"player_faction_actions": _duplicate_player_faction_actions(),
 		"faction_scores": faction_scores.duplicate(),
+		"faction_score_recency": faction_score_recency.duplicate(),
+		"faction_score_recency_counter": _faction_score_recency_counter,
 	})
 
 
@@ -1380,11 +1481,18 @@ func _refund_faction_action(peer_id: int, faction_id: int, used_faction_token: b
 
 func _apply_faction_scores(scored: Dictionary) -> void:
 	for faction in Factions.ALL:
-		faction_scores[faction] = faction_scores.get(faction, 0) + int(scored.get(faction, 0))
-	_sync_faction_scores.rpc(faction_scores)
+		var points := int(scored.get(faction, 0))
+		if points <= 0:
+			continue
+		faction_scores[faction] = faction_scores.get(faction, 0) + points
+		for _i in range(points):
+			_faction_score_recency_counter += 1
+			faction_score_recency[faction] = _faction_score_recency_counter
+	_sync_faction_scores.rpc(faction_scores, faction_score_recency)
 
 
 func _finish_round() -> void:
+	_mini_cribs_completed_for_round = false
 	if get_total_faction_score() >= RemixRules.ENDING_SCORE_TOTAL:
 		ending_round_triggered = true
 		_set_phase(Phase.ROUND_END)
@@ -1459,10 +1567,24 @@ func _sync_player_names(names: Dictionary) -> void:
 	player_names = names
 
 
+func _broadcast_influence() -> void:
+	_apply_influence(player_influence)
+	_sync_influence.rpc(player_influence)
+
+
+func _apply_influence(influence: Dictionary) -> void:
+	var copy: Dictionary = {}
+	for peer_id in influence.keys():
+		copy[int(peer_id)] = RemixRules.normalize_faction_dict(influence[peer_id])
+	player_influence = copy
+	influence_updated.emit(player_influence)
+
+
 @rpc("authority", "call_remote", "reliable")
 func _sync_influence(influence: Dictionary) -> void:
-	player_influence = influence
-	influence_updated.emit(influence)
+	if multiplayer.is_server():
+		return
+	_apply_influence(influence)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1496,8 +1618,9 @@ func _sync_board(board_state: Array, faction_power: Dictionary) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
-func _sync_faction_scores(scores: Dictionary) -> void:
+func _sync_faction_scores(scores: Dictionary, recency: Dictionary) -> void:
 	faction_scores = scores
+	faction_score_recency = recency
 	faction_scores_updated.emit(scores)
 
 

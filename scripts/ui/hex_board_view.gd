@@ -3,6 +3,7 @@ extends Control
 signal hex_clicked(hex_index: int)
 
 const HEX_RADIUS := 62.0
+const BOARD_OFFSET := Vector2(-40.0, 0.0)
 
 const TERRAIN_COLORS := {
 	HexBoard.Terrain.MOUNTAIN: Color("#8a9098"),
@@ -18,6 +19,7 @@ var _board_state: Array = []
 var _faction_power: Dictionary = {}
 var _action_selected_hex: int = -1
 var _action_target_hexes: Array = []
+var _crib_target_hexes: Array = []
 
 
 func _ready() -> void:
@@ -30,11 +32,22 @@ func _ready() -> void:
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:
 	clear_action_selection()
+	clear_crib_selection()
 
 
 func clear_action_selection() -> void:
 	_action_selected_hex = -1
 	_action_target_hexes.clear()
+	queue_redraw()
+
+
+func clear_crib_selection() -> void:
+	_crib_target_hexes.clear()
+	queue_redraw()
+
+
+func set_crib_selection(target_hexes: Array) -> void:
+	_crib_target_hexes = target_hexes.duplicate()
 	queue_redraw()
 
 
@@ -89,18 +102,18 @@ func _draw() -> void:
 
 
 func _draw_legend() -> void:
-	var panel_rect := Rect2(8.0, 8.0, 260.0, 72.0)
+	var panel_rect := Rect2(8.0, 8.0, 260.0, 88.0)
 	draw_rect(panel_rect, Color(0.07, 0.09, 0.12, 0.88))
 
 	var y := 22.0
-	for faction in Factions.ALL:
+	for faction in GameState.get_factions_by_rank():
 		var power := int(_faction_power.get(faction, 0))
 		var score := int(GameState.faction_scores.get(faction, 0))
 		draw_circle(Vector2(18.0, y - 4.0), 5.0, Factions.COLORS[faction])
 		draw_string(
 			ThemeDB.fallback_font,
 			Vector2(28, y),
-			"%s | cubes: %d | score: %d" % [Factions.name_for(faction), power, score],
+			"%s | score: %d | cubes: %d" % [Factions.name_for(faction), score, power],
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1,
 			13,
@@ -108,8 +121,24 @@ func _draw_legend() -> void:
 		)
 		y += 16.0
 
+	var total := GameState.get_total_faction_score()
+	draw_string(
+		ThemeDB.fallback_font,
+		Vector2(28, y),
+		"%d / %d" % [total, RemixRules.ENDING_SCORE_TOTAL],
+		HORIZONTAL_ALIGNMENT_LEFT,
+		-1,
+		13,
+		LEGEND_TEXT_COLOR
+	)
+
 
 func _draw_action_highlights(centers: Array) -> void:
+	for hex_index in _crib_target_hexes:
+		var crib_index := int(hex_index)
+		if crib_index >= 0 and crib_index < centers.size():
+			_draw_hex_ring(centers[crib_index], Color(0.55, 0.85, 1.0, 0.95), 3.0)
+
 	if _action_selected_hex >= 0 and _action_selected_hex < centers.size():
 		_draw_hex_ring(centers[_action_selected_hex], Color(1.0, 0.92, 0.35, 0.95), 3.0)
 
@@ -301,7 +330,7 @@ func _hex_top_baseline(center: Vector2) -> float:
 
 func _hex_centers() -> Array:
 	var bounds := HexBoard.board_pixel_bounds(HEX_RADIUS)
-	var origin := Vector2(size.x * 0.5, size.y * 0.5) - bounds.get_center()
+	var origin := Vector2(size.x * 0.5, size.y * 0.5) - bounds.get_center() + BOARD_OFFSET
 
 	var centers: Array = []
 	for hex_index in range(HexBoard.HEX_COUNT):

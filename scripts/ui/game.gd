@@ -8,7 +8,6 @@ extends Control
 @onready var coins_label: Label = $HUD/Margin/VBox/CoinsLabel
 @onready var action_points_label: Label = $HUD/Margin/VBox/ActionPointsLabel
 @onready var faction_actions_label: Label = $HUD/Margin/VBox/FactionActionsLabel
-@onready var faction_scores_label: Label = $HUD/Margin/VBox/FactionScoresLabel
 @onready var start_round_button: Button = $HUD/Margin/VBox/StartRoundButton
 @onready var end_shop_button: Button = $HUD/Margin/VBox/EndShopButton
 @onready var end_actions_button: Button = $HUD/Margin/VBox/EndActionsButton
@@ -68,6 +67,7 @@ func _ready() -> void:
 	card_panel.discard_submitted.connect(_on_discard_submitted)
 	card_panel.pegging_play_requested.connect(_on_pegging_play_requested)
 	card_panel.pegging_pass_requested.connect(_on_pegging_pass_requested)
+	card_panel.crib_hex_highlights_changed.connect(_on_crib_hex_highlights_changed)
 	switch_player_button.pressed.connect(_on_switch_player_pressed)
 	board.hex_clicked.connect(_on_board_hex_clicked)
 
@@ -166,6 +166,13 @@ func _on_pegging_play_requested(hand_index: int) -> void:
 
 func _on_pegging_pass_requested() -> void:
 	GameState.submit_pegging_pass()
+
+
+func _on_crib_hex_highlights_changed(target_hexes: Array) -> void:
+	if target_hexes.is_empty():
+		board.clear_crib_selection()
+	else:
+		board.set_crib_selection(target_hexes)
 
 
 func _on_game_message(message: String) -> void:
@@ -313,6 +320,7 @@ func _clear_action_selection() -> void:
 	_update_action_button_styles()
 	_update_cube_count_visibility()
 	board.clear_action_selection()
+	board.clear_crib_selection()
 	_update_action_help()
 
 
@@ -524,7 +532,6 @@ func _refresh_ui() -> void:
 	coins_label.text = _format_coins()
 	action_points_label.text = _format_action_points()
 	faction_actions_label.text = _format_faction_actions()
-	faction_scores_label.text = _format_faction_scores()
 	_update_actions_left_big_display()
 	board.queue_redraw()
 
@@ -568,17 +575,6 @@ func _format_faction_actions() -> String:
 			parts.append("%s %d" % [Factions.name_for(faction), RemixRules.faction_dict_value(tokens, faction)])
 		lines.append("%s: %s" % [player_name, ", ".join(parts)])
 
-	return "\n".join(lines)
-
-
-func _format_faction_scores() -> String:
-	var total := GameState.get_total_faction_score()
-	var lines: PackedStringArray = [
-		"Faction scores (game ends after round hitting %d total):" % RemixRules.ENDING_SCORE_TOTAL,
-		"Combined: %d / %d" % [total, RemixRules.ENDING_SCORE_TOTAL],
-	]
-	for faction in Factions.ALL:
-		lines.append("%s: %d" % [Factions.name_for(faction), GameState.faction_scores.get(faction, 0)])
 	return "\n".join(lines)
 
 
