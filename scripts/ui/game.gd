@@ -1,11 +1,18 @@
 extends Control
 
+const HUD_WIDTH_RATIO := 0.28
+const MAIN_WIDTH_RATIO := 0.72
+const CARD_PANEL_HEIGHT := 200
+const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
+
+@onready var hud: PanelContainer = $HUD
 @onready var status_label: Label = $HUD/Margin/VBox/StatusLabel
 @onready var phase_label: Label = $HUD/Margin/VBox/PhaseLabel
 @onready var pegging_count_label: Label = $HUD/Margin/VBox/PeggingCountLabel
 @onready var pegging_turn_label: Label = $HUD/Margin/VBox/PeggingTurnLabel
 @onready var influence_display: Control = $HUD/Margin/VBox/InfluenceDisplay
 @onready var coins_label: Label = $HUD/Margin/VBox/CoinsLabel
+@onready var crib_discards_label: Label = $HUD/Margin/VBox/CribDiscardsLabel
 @onready var action_points_label: Label = $HUD/Margin/VBox/ActionPointsLabel
 @onready var faction_actions_label: Label = $HUD/Margin/VBox/FactionActionsLabel
 @onready var start_round_button: Button = $HUD/Margin/VBox/StartRoundButton
@@ -28,9 +35,11 @@ extends Control
 @onready var clear_action_button: Button = $HUD/Margin/VBox/ActionPanel/ClearActionButton
 @onready var board: Control = $Board
 @onready var card_panel = $CardPlayPanel
-@onready var offline_bar: HBoxContainer = $HUD/Margin/VBox/OfflineBar
+@onready var offline_bar: VBoxContainer = $HUD/Margin/VBox/OfflineBar
 @onready var control_peer_label: Label = $HUD/Margin/VBox/OfflineBar/ControlPeerLabel
-@onready var switch_player_button: Button = $HUD/Margin/VBox/OfflineBar/SwitchPlayerButton
+@onready var switch_player_button: Button = $HUD/Margin/VBox/OfflineBar/OfflineButtons/SwitchPlayerButton
+@onready var save_debug_button: Button = $HUD/Margin/VBox/OfflineBar/OfflineButtons/SaveDebugButton
+@onready var load_debug_button: Button = $HUD/Margin/VBox/OfflineBar/OfflineButtons/LoadDebugButton
 
 var _selected_action_type: int = -1
 var _selected_source_hex: int = -1
@@ -69,6 +78,8 @@ func _ready() -> void:
 	card_panel.pegging_pass_requested.connect(_on_pegging_pass_requested)
 	card_panel.crib_hex_highlights_changed.connect(_on_crib_hex_highlights_changed)
 	switch_player_button.pressed.connect(_on_switch_player_pressed)
+	save_debug_button.pressed.connect(_on_save_debug_pressed)
+	load_debug_button.pressed.connect(_on_load_debug_pressed)
 	board.hex_clicked.connect(_on_board_hex_clicked)
 
 	push_button.pressed.connect(_on_push_pressed)
@@ -86,7 +97,72 @@ func _ready() -> void:
 		if NetworkManager.is_server():
 			GameState.register_player(NetworkManager.get_local_peer_id())
 
+	_apply_panel_style(hud)
+	_apply_hud_content_width()
+	resized.connect(_apply_layout)
+	call_deferred("_apply_layout")
 	_refresh_ui()
+
+
+func _apply_panel_style(panel: PanelContainer) -> void:
+	var style := StyleBoxFlat.new()
+	style.bg_color = PANEL_BG_COLOR
+	style.set_content_margin_all(0)
+	style.expand_margin_left = 0
+	style.expand_margin_top = 0
+	style.expand_margin_right = 0
+	style.expand_margin_bottom = 0
+	panel.add_theme_stylebox_override("panel", style)
+	panel.clip_contents = true
+
+
+func _apply_hud_content_width() -> void:
+	var hud_content := hud.get_node("Margin/VBox")
+	for child in hud_content.get_children():
+		if child is Control:
+			child.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			if child is Label:
+				child.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	influence_display.custom_minimum_size.x = 0
+
+
+func _apply_layout() -> void:
+	var main_right := MAIN_WIDTH_RATIO
+	var card_height := float(CARD_PANEL_HEIGHT)
+
+	hud.set_anchors_preset(Control.PRESET_TOP_RIGHT, true)
+	hud.anchor_left = main_right
+	hud.anchor_top = 0.0
+	hud.anchor_right = 1.0
+	hud.anchor_bottom = 1.0
+	hud.offset_left = 0.0
+	hud.offset_top = 0.0
+	hud.offset_right = 0.0
+	hud.offset_bottom = 0.0
+	hud.z_index = 2
+
+	board.set_anchors_preset(Control.PRESET_FULL_RECT, true)
+	board.anchor_left = 0.0
+	board.anchor_top = 0.0
+	board.anchor_right = main_right
+	board.anchor_bottom = 1.0
+	board.offset_left = 0.0
+	board.offset_top = 0.0
+	board.offset_right = 0.0
+	board.offset_bottom = -card_height
+
+	card_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT, true)
+	card_panel.anchor_left = 0.0
+	card_panel.anchor_top = 1.0
+	card_panel.anchor_right = main_right
+	card_panel.anchor_bottom = 1.0
+	card_panel.offset_left = 0.0
+	card_panel.offset_top = -card_height
+	card_panel.offset_right = 0.0
+	card_panel.offset_bottom = 0.0
+	card_panel.z_index = 1
+
+	influence_display.refresh()
 
 
 func _on_action_history_changed(can_undo: bool) -> void:
@@ -187,6 +263,21 @@ func _on_active_control_changed(_peer_id: int) -> void:
 
 func _on_switch_player_pressed() -> void:
 	GameState.toggle_control_peer()
+
+
+func _on_save_debug_pressed() -> void:
+	if GameState.save_debug_snapshot():
+		status_label.text = "Debug save written to %s" % GameState.DEBUG_SAVE_PATH
+	else:
+		status_label.text = "Failed to write debug save."
+
+
+func _on_load_debug_pressed() -> void:
+	_clear_action_selection()
+	if GameState.load_debug_snapshot():
+		_refresh_ui()
+	else:
+		status_label.text = "Failed to load debug save from %s" % GameState.DEBUG_SAVE_PATH
 
 
 func _on_pegging_state_updated(_sequence: Array, total: int, turn_peer: int) -> void:
@@ -530,6 +621,7 @@ func _refresh_ui() -> void:
 	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	influence_display.refresh()
 	coins_label.text = _format_coins()
+	crib_discards_label.text = _format_crib_discards()
 	action_points_label.text = _format_action_points()
 	faction_actions_label.text = _format_faction_actions()
 	_update_actions_left_big_display()
@@ -546,6 +638,28 @@ func _format_coins() -> String:
 		lines.append("%s: %d" % [player_name, GameState.player_coins[peer_id]])
 
 	return "\n".join(lines)
+
+
+func _format_crib_discards() -> String:
+	var peer_id := GameState.get_control_peer_id()
+	var cards: Array = GameState.get_crib_discards_for_peer(peer_id)
+	var show_phase := GameState.current_phase in [
+		GameState.Phase.CUT_CARD,
+		GameState.Phase.PEGGING,
+		GameState.Phase.SHOW_HANDS,
+		GameState.Phase.SHOP,
+		GameState.Phase.SPEND_ACTIONS,
+		GameState.Phase.RESOLVE_CRIB,
+	]
+	crib_discards_label.visible = show_phase and not cards.is_empty()
+	if not crib_discards_label.visible:
+		return ""
+
+	var suit_names: PackedStringArray = []
+	for card in cards:
+		var faction_id := int(card.get("faction", Factions.from_suit(str(card.get("suit", "clubs")))))
+		suit_names.append(Factions.name_for(faction_id))
+	return "Your crib discards: %s" % ", ".join(suit_names)
 
 
 func _format_action_points() -> String:

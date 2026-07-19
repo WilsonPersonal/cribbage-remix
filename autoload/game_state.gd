@@ -31,6 +31,7 @@ signal action_turn_updated(peer_id: int)
 signal action_history_changed(can_undo: bool)
 signal crib_resolution_updated(crib_cards: Array, resolved: Dictionary, resolver_peer: int)
 signal pegging_state_updated(sequence: Array, total: int, turn_peer: int)
+signal pegging_score_scored(peer_id: int, event_type: String, points: int)
 signal crib_count_updated(count: int)
 signal game_message(message: String)
 signal active_control_changed(peer_id: int)
@@ -83,6 +84,7 @@ var pegging_last_play_peer: int = 0
 var active_player_order: Array = []
 var discard_ready: Dictionary = {}
 var show_hands: Dictionary = {}
+var player_crib_discards: Dictionary = {}
 
 var _action_undo_stack: Array = []
 var _board := HexBoard.new()
@@ -140,7 +142,7 @@ func toggle_control_peer() -> void:
 func is_discard_pending_for_control() -> bool:
 	if current_phase != Phase.DISCARD_TO_CRIB:
 		return false
-	return not discard_ready.get(get_control_peer_id(), false)
+	return not bool(discard_ready.get(get_control_peer_id(), false))
 
 
 func is_controlled_turn(peer_id: int) -> bool:
@@ -231,7 +233,12 @@ func get_affordable_actions_for_faction(peer_id: int, faction_id: int) -> int:
 
 
 func can_undo_action() -> bool:
-	return not _action_undo_stack.is_empty()
+	if current_phase != Phase.SPEND_ACTIONS:
+		return false
+	if _action_undo_stack.is_empty():
+		return false
+	var snapshot: Dictionary = _action_undo_stack[_action_undo_stack.size() - 1]
+	return int(snapshot.get("peer_id", -1)) == int(action_turn_peer_id)
 
 
 func get_card_faction_id(card: Dictionary) -> int:
@@ -309,7 +316,7 @@ func _update_offline_active_player() -> void:
 	match current_phase:
 		Phase.DISCARD_TO_CRIB:
 			for peer_id in active_player_order:
-				if not discard_ready.get(peer_id, false):
+				if not bool(discard_ready.get(int(peer_id), false)):
 					set_active_control_peer(int(peer_id))
 					return
 		Phase.SETUP_MINI_CRIB:
@@ -399,6 +406,7 @@ func start_new_round() -> void:
 	discard_ready.clear()
 	crib_owner_peer_id = 0
 	show_hands.clear()
+	player_crib_discards.clear()
 	_deck.clear()
 
 	for peer_id in player_names.keys():
@@ -424,8 +432,8 @@ func request_discard(card_indices: Array) -> void:
 	if current_phase != Phase.DISCARD_TO_CRIB:
 		return
 
-	var peer_id := _action_peer_id()
-	if discard_ready.get(peer_id, false):
+	var peer_id := int(_action_peer_id())
+	if bool(discard_ready.get(peer_id, false)):
 		return
 
 	var expected := RemixRules.crib_discard_count(get_player_count())
@@ -438,12 +446,16 @@ func request_discard(card_indices: Array) -> void:
 
 	var sorted_indices: Array = card_indices.duplicate()
 	sorted_indices.sort()
+	var discarded_to_crib: Array = []
+	for index in sorted_indices:
+		discarded_to_crib.append(hand[index].duplicate(true))
 	sorted_indices.reverse()
 	for index in sorted_indices:
 		crib.append(hand[index])
 		hand.remove_at(index)
 
 	hands[peer_id] = hand
+	player_crib_discards[peer_id] = discarded_to_crib
 	discard_ready[peer_id] = true
 	_send_local_hand(peer_id, hand)
 	_sync_crib_count.rpc(crib.size())
@@ -478,18 +490,25 @@ func request_pegging_play(hand_index: int) -> void:
 	pegging_sequence.append(card)
 	pegging_total += int(card.get("value", 0))
 	pegging_last_play_peer = peer_id
+	var played_to_thirty_one := pegging_total == PeggingRules.MAX_TOTAL
 
 	for event in PeggingRules.score_events(pegging_sequence, pegging_total):
 		grant_pegging_coins(peer_id, event)
 
+	if hand.is_empty() and not played_to_thirty_one:
+		grant_pegging_coins(peer_id, "last_card")
+
 	_send_local_hand(peer_id, hand)
 
-	if pegging_total == PeggingRules.MAX_TOTAL:
+	if played_to_thirty_one:
 		pegging_total = 0
 		pegging_sequence.clear()
 
 	if _all_hands_empty():
-		_finish_pegging()
+		if hand.is_empty() and not played_to_thirty_one:
+			_schedule_finish_pegging(1.1)
+		else:
+			_finish_pegging()
 		return
 
 	_advance_pegging_turn()
@@ -512,8 +531,6 @@ func request_pegging_pass() -> void:
 
 	var forced_peer := _peer_who_must_play_after_pass(peer_id)
 	if forced_peer >= 0:
-		if not pegging_sequence.is_empty() and pegging_last_play_peer != 0:
-			grant_pegging_coins(pegging_last_play_peer, "go")
 		pegging_turn_peer = forced_peer
 		_broadcast_pegging_state()
 		return
@@ -556,6 +573,16 @@ func grant_pegging_coins(peer_id: int, event_type: String) -> void:
 
 	player_coins[peer_id] = player_coins.get(peer_id, 0) + gained
 	_sync_coins.rpc(player_coins)
+	_broadcast_pegging_score(peer_id, event_type, gained)
+
+
+func _broadcast_pegging_score(peer_id: int, event_type: String, points: int) -> void:
+	_apply_pegging_score(peer_id, event_type, points)
+	_sync_pegging_score.rpc(peer_id, event_type, points)
+
+
+func _apply_pegging_score(peer_id: int, event_type: String, points: int) -> void:
+	pegging_score_scored.emit(peer_id, event_type, points)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -658,7 +685,7 @@ func request_faction_action(
 		ActionSystem.Type.CREATE_CART:
 			move_count = 1
 
-	_record_action_undo_snapshot()
+	_record_action_undo_snapshot(peer_id)
 
 	var spend_result := _spend_for_faction_action(peer_id, faction_id)
 	if not spend_result.spent:
@@ -725,7 +752,12 @@ func request_undo_action() -> void:
 	if _action_undo_stack.is_empty():
 		return
 
-	var snapshot: Dictionary = _action_undo_stack.pop_back()
+	var snapshot: Dictionary = _action_undo_stack[_action_undo_stack.size() - 1]
+	if int(snapshot.get("peer_id", -1)) != int(action_turn_peer_id):
+		_clear_action_undo_stack()
+		return
+
+	_action_undo_stack.pop_back()
 	_board.load_state(snapshot.get("board", []))
 	action_points = snapshot.get("action_points", action_points)
 	player_faction_actions = snapshot.get("player_faction_actions", player_faction_actions)
@@ -752,6 +784,7 @@ func request_end_action_phase() -> void:
 		return
 
 	action_players_finished[peer_id] = true
+	_clear_action_undo_stack()
 	if _all_action_players_finished():
 		_begin_crib_resolution()
 		return
@@ -761,7 +794,7 @@ func request_end_action_phase() -> void:
 
 func _all_action_players_finished() -> bool:
 	for peer_id in active_player_order:
-		if not action_players_finished.get(peer_id, false):
+		if not bool(action_players_finished.get(int(peer_id), false)):
 			return false
 	return true
 
@@ -769,11 +802,12 @@ func _all_action_players_finished() -> bool:
 func _advance_action_turn() -> void:
 	var next_peer := _next_action_player()
 	if next_peer < 0:
+		_clear_action_undo_stack()
 		_begin_crib_resolution()
 		return
 
-	action_turn_peer_id = next_peer
 	_clear_action_undo_stack()
+	action_turn_peer_id = next_peer
 	_broadcast_action_turn()
 	var player_name: String = player_names.get(
 		action_turn_peer_id,
@@ -789,14 +823,15 @@ func _next_action_player() -> int:
 		start_index = 0
 
 	for step in range(1, peers.size() + 1):
-		var candidate: int = peers[(start_index + step) % peers.size()]
-		if not action_players_finished.get(candidate, false):
+		var candidate: int = int(peers[(start_index + step) % peers.size()])
+		if not bool(action_players_finished.get(candidate, false)):
 			return candidate
 
 	return -1
 
 
 func _begin_crib_resolution() -> void:
+	_clear_action_undo_stack()
 	end_crib_resolved.clear()
 	crib_resolver_peer_id = crib_owner_peer_id
 	_set_phase(Phase.RESOLVE_CRIB)
@@ -1045,8 +1080,227 @@ func get_factions_by_rank() -> Array:
 	return ranked
 
 
+func get_crib_discards_for_peer(peer_id: int) -> Array:
+	return player_crib_discards.get(peer_id, [])
+
+
 func get_player_count() -> int:
 	return player_names.size()
+
+
+const DEBUG_SAVE_VERSION := 1
+const DEBUG_SAVE_PATH := "user://cribbage_remix_debug_save.json"
+
+
+func save_debug_snapshot(path: String = DEBUG_SAVE_PATH) -> bool:
+	if not offline_debug_mode:
+		return false
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_string(JSON.stringify(export_debug_snapshot(), "\t"))
+	return true
+
+
+func load_debug_snapshot(path: String = DEBUG_SAVE_PATH) -> bool:
+	if not offline_debug_mode:
+		return false
+	if not FileAccess.file_exists(path):
+		return false
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return false
+	var parsed: Variant = JSON.parse_string(file.get_as_text())
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return false
+	return import_debug_snapshot(parsed)
+
+
+func export_debug_snapshot() -> Dictionary:
+	return {
+		"version": DEBUG_SAVE_VERSION,
+		"current_phase": int(current_phase),
+		"round_number": round_number,
+		"ending_round_triggered": ending_round_triggered,
+		"offline_debug_mode": offline_debug_mode,
+		"active_control_peer_id": active_control_peer_id,
+		"player_names": player_names.duplicate(),
+		"player_influence": _duplicate_player_faction_actions_from(player_influence),
+		"player_supply": _duplicate_player_faction_actions_from(player_supply),
+		"player_coins": player_coins.duplicate(true),
+		"action_points": action_points.duplicate(true),
+		"player_faction_actions": _duplicate_player_faction_actions(),
+		"faction_scores": faction_scores.duplicate(),
+		"faction_score_recency": faction_score_recency.duplicate(),
+		"faction_score_recency_counter": _faction_score_recency_counter,
+		"dealer_peer_id": dealer_peer_id,
+		"crib_owner_peer_id": crib_owner_peer_id,
+		"hands": _duplicate_peer_array_dict(hands),
+		"crib": crib.duplicate(true),
+		"cut_card": cut_card.duplicate(true),
+		"action_turn_peer_id": action_turn_peer_id,
+		"action_players_finished": action_players_finished.duplicate(true),
+		"mini_crib_index": mini_crib_index,
+		"mini_crib_resolving_peer": mini_crib_resolving_peer,
+		"mini_crib_cards": mini_crib_cards.duplicate(true),
+		"mini_crib_resolved": mini_crib_resolved.duplicate(true),
+		"end_crib_resolved": end_crib_resolved.duplicate(true),
+		"crib_resolver_peer_id": crib_resolver_peer_id,
+		"mini_cribs_completed_for_round": _mini_cribs_completed_for_round,
+		"pegging_total": pegging_total,
+		"pegging_sequence": pegging_sequence.duplicate(true),
+		"pegging_turn_peer": pegging_turn_peer,
+		"pegging_last_play_peer": pegging_last_play_peer,
+		"active_player_order": _normalize_peer_id_array(active_player_order),
+		"discard_ready": discard_ready.duplicate(true),
+		"show_hands": _duplicate_peer_array_dict(show_hands),
+		"player_crib_discards": _duplicate_peer_array_dict(player_crib_discards),
+		"board_state": _board.duplicate_state(),
+		"deck": _deck.duplicate(true),
+		"board_setup_complete": _board_setup_complete,
+	}
+
+
+func import_debug_snapshot(data: Dictionary) -> bool:
+	if int(data.get("version", 0)) != DEBUG_SAVE_VERSION:
+		return false
+
+	current_phase = int(data.get("current_phase", Phase.WAITING)) as Phase
+	round_number = int(data.get("round_number", 0))
+	ending_round_triggered = bool(data.get("ending_round_triggered", false))
+	active_control_peer_id = int(data.get("active_control_peer_id", 1))
+	player_names = _normalize_peer_key_dict(data.get("player_names", {}))
+	player_influence = _normalize_peer_faction_dicts(data.get("player_influence", {}))
+	player_supply = _normalize_peer_faction_dicts(data.get("player_supply", {}))
+	player_coins = _normalize_peer_key_dict(data.get("player_coins", {}))
+	action_points = _normalize_peer_key_dict(data.get("action_points", {}))
+	player_faction_actions = _normalize_peer_faction_dicts(data.get("player_faction_actions", {}))
+	faction_scores = RemixRules.normalize_faction_dict(data.get("faction_scores", faction_scores))
+	faction_score_recency = RemixRules.normalize_faction_dict(
+		data.get("faction_score_recency", faction_score_recency)
+	)
+	_faction_score_recency_counter = int(data.get("faction_score_recency_counter", 0))
+	dealer_peer_id = int(data.get("dealer_peer_id", 1))
+	crib_owner_peer_id = int(data.get("crib_owner_peer_id", 0))
+	hands = _normalize_peer_array_dict(data.get("hands", {}))
+	crib = _variant_array(data.get("crib", []))
+	cut_card = data.get("cut_card", {}).duplicate(true) if typeof(data.get("cut_card", {})) == TYPE_DICTIONARY else {}
+	action_turn_peer_id = int(data.get("action_turn_peer_id", 0))
+	action_players_finished = _normalize_peer_key_dict(data.get("action_players_finished", {}))
+	mini_crib_index = int(data.get("mini_crib_index", 0))
+	mini_crib_resolving_peer = int(data.get("mini_crib_resolving_peer", 0))
+	mini_crib_cards = _variant_array(data.get("mini_crib_cards", []))
+	mini_crib_resolved = _normalize_choice_dict(data.get("mini_crib_resolved", {}))
+	end_crib_resolved = _normalize_choice_dict(data.get("end_crib_resolved", {}))
+	crib_resolver_peer_id = int(data.get("crib_resolver_peer_id", 0))
+	_mini_cribs_completed_for_round = bool(data.get("mini_cribs_completed_for_round", false))
+	pegging_total = int(data.get("pegging_total", 0))
+	pegging_sequence = _variant_array(data.get("pegging_sequence", []))
+	pegging_turn_peer = int(data.get("pegging_turn_peer", 0))
+	pegging_last_play_peer = int(data.get("pegging_last_play_peer", 0))
+	active_player_order = _normalize_peer_id_array(_variant_array(data.get("active_player_order", [])))
+	discard_ready = _normalize_peer_key_dict(data.get("discard_ready", {}))
+	show_hands = _normalize_peer_array_dict(data.get("show_hands", {}))
+	player_crib_discards = _normalize_peer_array_dict(data.get("player_crib_discards", {}))
+	_deck = _variant_array(data.get("deck", []))
+	_board_setup_complete = bool(data.get("board_setup_complete", true))
+	_clear_action_undo_stack()
+
+	var board_state := _variant_array(data.get("board_state", []))
+	_board.load_state(board_state)
+	_apply_debug_snapshot_views()
+	return true
+
+
+func _duplicate_peer_array_dict(source: Dictionary) -> Dictionary:
+	var copy: Dictionary = {}
+	for peer_id in source.keys():
+		copy[peer_id] = source[peer_id].duplicate(true)
+	return copy
+
+
+func _duplicate_player_faction_actions_from(source: Dictionary) -> Dictionary:
+	var copy: Dictionary = {}
+	for peer_id in source.keys():
+		copy[peer_id] = RemixRules.normalize_faction_dict(source[peer_id])
+	return copy
+
+
+func _normalize_peer_id_array(raw: Array) -> Array:
+	var copy: Array = []
+	for value in raw:
+		copy.append(int(value))
+	return copy
+
+
+func _normalize_peer_key_dict(raw: Dictionary) -> Dictionary:
+	var copy: Dictionary = {}
+	for key in raw.keys():
+		copy[int(key)] = raw[key]
+	return copy
+
+
+func _normalize_peer_faction_dicts(raw: Dictionary) -> Dictionary:
+	var copy: Dictionary = {}
+	for key in raw.keys():
+		copy[int(key)] = RemixRules.normalize_faction_dict(raw[key])
+	return copy
+
+
+func _normalize_peer_array_dict(raw: Dictionary) -> Dictionary:
+	var copy: Dictionary = {}
+	for key in raw.keys():
+		copy[int(key)] = _variant_array(raw[key])
+	return copy
+
+
+func _normalize_choice_dict(raw: Dictionary) -> Dictionary:
+	var copy: Dictionary = {}
+	for key in raw.keys():
+		var choice = raw[key]
+		if typeof(choice) == TYPE_DICTIONARY:
+			copy[int(key)] = choice.duplicate(true)
+	return copy
+
+
+func _variant_array(value: Variant) -> Array:
+	if typeof(value) != TYPE_ARRAY:
+		return []
+	return value.duplicate(true)
+
+
+func _apply_debug_snapshot_views() -> void:
+	_apply_board(_board.duplicate_state(), _board.get_faction_power())
+	_apply_phase(current_phase)
+	_apply_influence(player_influence)
+	supply_updated.emit(player_supply)
+	_apply_action_points(action_points)
+	coins_updated.emit(player_coins)
+	faction_actions_updated.emit(player_faction_actions)
+	faction_scores_updated.emit(faction_scores)
+	cut_card_updated.emit(cut_card)
+	action_turn_updated.emit(action_turn_peer_id)
+	pegging_state_updated.emit(pegging_sequence, pegging_total, pegging_turn_peer)
+	crib_count_updated.emit(crib.size())
+
+	local_hand = hands.get(active_control_peer_id, []).duplicate(true)
+	local_hand_updated.emit(local_hand)
+
+	match current_phase:
+		Phase.SETUP_MINI_CRIB:
+			local_crib = mini_crib_cards.duplicate(true)
+			local_crib_resolved = mini_crib_resolved.duplicate(true)
+			crib_resolution_updated.emit(local_crib, local_crib_resolved, mini_crib_resolving_peer)
+		Phase.RESOLVE_CRIB:
+			local_crib = crib.duplicate(true)
+			local_crib_resolved = end_crib_resolved.duplicate(true)
+			crib_resolution_updated.emit(local_crib, local_crib_resolved, crib_resolver_peer_id)
+		_:
+			local_crib.clear()
+			local_crib_resolved.clear()
+
+	_update_offline_active_player()
+	_broadcast_message("Debug snapshot loaded.")
 
 
 func get_board_state() -> Array:
@@ -1086,6 +1340,7 @@ func _deal_cards() -> void:
 		_deck = CribbageDeck.create_shuffled_deck()
 	crib.clear()
 	discard_ready.clear()
+	player_crib_discards.clear()
 
 	for peer_id in active_player_order:
 		var hand: Array = []
@@ -1165,6 +1420,10 @@ func _advance_pegging_turn() -> void:
 	_broadcast_pegging_state()
 
 
+func _schedule_finish_pegging(delay_seconds: float) -> void:
+	get_tree().create_timer(delay_seconds).timeout.connect(_finish_pegging, CONNECT_ONE_SHOT)
+
+
 func _finish_pegging() -> void:
 	if current_phase != Phase.PEGGING:
 		return
@@ -1204,7 +1463,7 @@ func _peer_who_must_play_after_pass(passing_peer: int) -> int:
 
 func _all_players_discarded() -> bool:
 	for peer_id in active_player_order:
-		if not discard_ready.get(peer_id, false):
+		if not bool(discard_ready.get(int(peer_id), false)):
 			return false
 	return true
 
@@ -1254,6 +1513,7 @@ func _sorted_peer_ids() -> Array:
 
 
 func _send_local_hand(peer_id: int, hand: Array) -> void:
+	peer_id = int(peer_id)
 	if offline_debug_mode:
 		if peer_id == active_control_peer_id:
 			local_hand = hand.duplicate(true)
@@ -1285,6 +1545,8 @@ func _broadcast_action_turn() -> void:
 
 
 func _apply_action_turn(peer_id: int) -> void:
+	if int(action_turn_peer_id) != int(peer_id):
+		_clear_action_undo_stack()
 	action_turn_peer_id = peer_id
 	action_turn_updated.emit(peer_id)
 	_update_offline_active_player()
@@ -1427,8 +1689,9 @@ func _refund_multiple_faction_actions(
 		_refund_faction_action(peer_id, faction_id, false)
 
 
-func _record_action_undo_snapshot() -> void:
+func _record_action_undo_snapshot(peer_id: int) -> void:
 	_action_undo_stack.append({
+		"peer_id": peer_id,
 		"board": _board.duplicate_state(),
 		"action_points": action_points.duplicate(true),
 		"player_faction_actions": _duplicate_player_faction_actions(),
@@ -1666,6 +1929,13 @@ func _sync_crib_resolution(crib_cards: Array, resolved: Dictionary, resolver_pee
 @rpc("authority", "call_remote", "reliable")
 func _sync_pegging_state(sequence: Array, total: int, turn_peer: int) -> void:
 	_apply_pegging_state(sequence, total, turn_peer)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_pegging_score(peer_id: int, event_type: String, points: int) -> void:
+	if multiplayer.is_server():
+		return
+	_apply_pegging_score(peer_id, event_type, points)
 
 
 @rpc("authority", "call_remote", "reliable")

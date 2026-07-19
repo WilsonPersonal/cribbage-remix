@@ -41,7 +41,7 @@ const BRIDGE_PAIRS := [
 const ADJACENCY := {
 	0: [1, 2, 8],
 	1: [0, 4, 6],
-	2: [0, 5, 8],
+	2: [0, 4, 5, 8],
 	3: [5, 6, 7],
 	4: [1, 2, 5, 6],
 	5: [2, 3, 4, 7],
@@ -225,6 +225,7 @@ func duplicate_state() -> Array:
 
 func load_state(state: Array) -> void:
 	hexes.clear()
+	_distance_cache.clear()
 	for hex in state:
 		if hex.has("cubes"):
 			hexes.append(_duplicate_hex(hex))
@@ -497,14 +498,22 @@ func _distance_to_hex(from_hex: int, to_hex: int) -> int:
 
 
 func _duplicate_hex(hex: Dictionary) -> Dictionary:
-	var carts_copy: Dictionary = {}
-	for faction in Factions.ALL:
-		carts_copy[faction] = hex["carts"].get(faction, []).duplicate()
-
 	return {
-		"cubes": RemixRules.normalize_faction_dict(hex["cubes"]),
-		"carts": carts_copy,
+		"cubes": RemixRules.normalize_faction_dict(hex.get("cubes", {})),
+		"carts": _normalize_carts_dict(hex.get("carts", {})),
 	}
+
+
+static func _normalize_carts_dict(carts: Dictionary) -> Dictionary:
+	var copy: Dictionary = {}
+	for faction in Factions.ALL:
+		var raw_origins: Variant = carts.get(faction, carts.get(str(faction), []))
+		var origins: Array = []
+		if typeof(raw_origins) == TYPE_ARRAY:
+			for origin_hex in raw_origins:
+				origins.append(int(origin_hex))
+		copy[faction] = origins
+	return copy
 
 
 func _empty_hex() -> Dictionary:

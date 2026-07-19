@@ -12,6 +12,7 @@ const CardWidgetScene := preload("res://scenes/card_widget.tscn")
 @onready var pegging_label: Label = $Margin/VBox/PeggingLabel
 @onready var pegging_count_label: Label = $Margin/VBox/PeggingCountLabel
 @onready var pegging_turn_label: Label = $Margin/VBox/PeggingTurnLabel
+@onready var pegging_score_layer: Control = $Margin/VBox/PeggingScoreLayer
 @onready var hand_container: HBoxContainer = $Margin/VBox/HandContainer
 @onready var pegging_container: HBoxContainer = $Margin/VBox/PeggingContainer
 @onready var action_row: HBoxContainer = $Margin/VBox/ActionRow
@@ -34,12 +35,19 @@ var _crib_mode_selected: bool = false
 var _pending_crib_accept: bool = false
 var _crib_choices: Dictionary = {}
 var _required_accepts: int = 0
+var _pegging_popup_count: int = 0
 
 
 func _ready() -> void:
 	var panel_style := StyleBoxFlat.new()
 	panel_style.bg_color = Color(0.1, 0.12, 0.16, 0.92)
+	panel_style.set_content_margin_all(0)
+	panel_style.expand_margin_left = 0
+	panel_style.expand_margin_top = 0
+	panel_style.expand_margin_right = 0
+	panel_style.expand_margin_bottom = 0
 	add_theme_stylebox_override("panel", panel_style)
+	clip_contents = true
 
 	confirm_discard_button.pressed.connect(_on_confirm_discard_pressed)
 	pass_button.pressed.connect(_on_pass_pressed)
@@ -52,6 +60,7 @@ func _ready() -> void:
 	GameState.local_hand_updated.connect(_on_local_hand_updated)
 	GameState.cut_card_updated.connect(_on_cut_card_updated)
 	GameState.pegging_state_updated.connect(_on_pegging_state_updated)
+	GameState.pegging_score_scored.connect(_on_pegging_score_scored)
 	GameState.phase_changed.connect(_on_phase_changed)
 	GameState.game_message.connect(_on_game_message)
 	GameState.active_control_changed.connect(_on_active_control_changed)
@@ -223,6 +232,52 @@ func _on_pegging_state_updated(sequence: Array, total: int, turn_peer: int) -> v
 	]
 	_refresh_pegging_display(sequence)
 	_update_action_buttons()
+
+
+func _on_pegging_score_scored(_peer_id: int, event_type: String, points: int) -> void:
+	var score_name := CribbageScoring.pegging_event_label(event_type)
+	_show_pegging_score_popup("%s: +%d" % [score_name, points])
+
+
+func _show_pegging_score_popup(text: String) -> void:
+	var overlay: Control = get_parent()
+	var popup := Label.new()
+	popup.text = text
+	popup.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	popup.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	popup.autowrap_mode = TextServer.AUTOWRAP_OFF
+	popup.add_theme_font_size_override("font_size", 22)
+	popup.add_theme_color_override("font_color", Color(1.0, 0.94, 0.55))
+	popup.modulate.a = 0.0
+	popup.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	popup.anchor_left = 0.0
+	popup.anchor_top = 1.0
+	popup.anchor_right = float(overlay.get("MAIN_WIDTH_RATIO"))
+	popup.anchor_bottom = 1.0
+	var card_panel_height := float(overlay.get("CARD_PANEL_HEIGHT"))
+	var bottom := -card_panel_height - 10.0 - float(_pegging_popup_count * 26)
+	popup.offset_bottom = bottom
+	popup.offset_top = bottom - 24.0
+	popup.offset_left = 0.0
+	popup.offset_right = 0.0
+	popup.z_index = 20
+	overlay.add_child(popup)
+	_pegging_popup_count += 1
+
+	var start_y := popup.offset_top
+	var tween := popup.create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(popup, "modulate:a", 1.0, 0.12)
+	tween.tween_property(popup, "offset_top", start_y - 18.0, 0.85).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.tween_property(popup, "offset_bottom", start_y - 18.0 + 24.0, 0.85).set_trans(Tween.TRANS_SINE).set_ease(
+		Tween.EASE_OUT
+	)
+	tween.set_parallel(false)
+	tween.tween_property(popup, "modulate:a", 0.0, 0.25).set_delay(0.45)
+	tween.tween_callback(func() -> void:
+		popup.queue_free()
+		_pegging_popup_count = maxi(0, _pegging_popup_count - 1)
+	)
 
 
 func _on_phase_changed(phase: GameState.Phase) -> void:
@@ -508,7 +563,10 @@ func _update_pegging_visibility(phase: GameState.Phase) -> void:
 	pegging_label.visible = in_pegging
 	pegging_count_label.visible = in_pegging
 	pegging_turn_label.visible = in_pegging
+	pegging_score_layer.visible = in_pegging
 	pegging_container.visible = in_pegging
+	if not in_pegging:
+		_pegging_popup_count = 0
 
 	if in_pegging:
 		pegging_count_label.text = "Count: %d / %d" % [

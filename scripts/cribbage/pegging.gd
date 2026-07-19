@@ -42,29 +42,37 @@ static func score_events(sequence: Array, running_total: int) -> Array:
 
 	var run_length := _tail_run_length(sequence)
 	if run_length >= 3:
-		events.append("run")
+		events.append("run_%d" % run_length)
 
 	return events
 
 
 static func _tail_run_length(sequence: Array) -> int:
-	if sequence.is_empty():
+	if sequence.size() < 3:
 		return 0
 
+	for length in range(mini(sequence.size(), 5), 2, -1):
+		var start := sequence.size() - length
+		var tail: Array = sequence.slice(start, sequence.size())
+		if _is_consecutive_run(tail):
+			return length
+
+	return 0
+
+
+static func _is_consecutive_run(cards: Array) -> bool:
+	if cards.size() < 3:
+		return false
+
 	var values: Array = []
-	for card in sequence:
+	for card in cards:
 		values.append(int(card.get("value", 0)))
 	values.sort()
 
-	var best := 1
-	var current := 1
 	for i in range(1, values.size()):
 		if values[i] == values[i - 1]:
-			continue
-		if values[i] == values[i - 1] + 1:
-			current += 1
-			best = max(best, current)
-		else:
-			current = 1
+			return false
+		if values[i] != values[i - 1] + 1:
+			return false
 
-	return best
+	return true

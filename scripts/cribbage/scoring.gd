@@ -2,7 +2,7 @@ class_name CribbageScoring
 extends RefCounted
 
 ## Show-hand scoring: each pair, 15, and run of 3+ grants one action.
-## Pegging uses coin rewards instead (see pegging_event_coins).
+## Pegging coin rewards follow standard cribbage (pair 2, triple 6, quad 12, 15/31 = 2, go = 1, run = length).
 
 
 static func count_actions_from_cards(cards: Array, cut_card: Dictionary = {}) -> int:
@@ -18,23 +18,49 @@ static func count_actions_from_cards(cards: Array, cut_card: Dictionary = {}) ->
 
 
 static func pegging_event_coins(event_type: String) -> int:
+	if event_type.begins_with("run_"):
+		return int(event_type.trim_prefix("run_"))
+
 	match event_type:
 		"pair":
-			return 1
-		"triple":
 			return 2
+		"triple":
+			return 6
 		"quadruple":
-			return 3
+			return 12
 		"fifteen":
-			return 1
+			return 2
 		"thirty_one":
 			return 2
 		"go":
 			return 1
-		"run":
+		"last_card":
 			return 1
 		_:
 			return 0
+
+
+static func pegging_event_label(event_type: String) -> String:
+	if event_type.begins_with("run_"):
+		return "Run"
+
+	match event_type:
+		"pair":
+			return "Pair"
+		"triple":
+			return "Triple"
+		"quadruple":
+			return "Quad"
+		"fifteen":
+			return "15"
+		"thirty_one":
+			return "31"
+		"go":
+			return "Go"
+		"last_card":
+			return "Last card"
+		_:
+			return event_type.capitalize()
 
 
 static func _count_pair_actions(cards: Array) -> int:
