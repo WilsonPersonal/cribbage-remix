@@ -110,6 +110,14 @@ func handle_crib_hex(hex_index: int) -> void:
 	_update_crib_action_buttons_visibility()
 
 
+func get_crib_card_global_center(card_index: int) -> Vector2:
+	if card_index < 0 or card_index >= crib_container.get_child_count():
+		return global_position
+
+	var card_widget: Control = crib_container.get_child(card_index)
+	return card_widget.get_global_rect().get_center()
+
+
 func _on_confirm_discard_pressed() -> void:
 	var expected := RemixRules.crib_discard_count(max(GameState.get_player_count(), 2))
 	if _selected_indices.size() != expected:

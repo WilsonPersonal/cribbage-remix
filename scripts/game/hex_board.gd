@@ -255,12 +255,30 @@ func controls_hex(faction: int, hex_index: int) -> bool:
 	return true
 
 
-func cart_can_advance(from_hex: int, to_hex: int, origin_hex: int) -> bool:
+func _cart_goal_for_origin(origin_hex: int) -> int:
+	return int(CART_GOALS.get(origin_hex, -1))
+
+
+func faction_has_cart_heading_to(faction: int, hex_index: int, goal_hex: int) -> bool:
+	if hex_index < 0 or hex_index >= HEX_COUNT or goal_hex < 0:
+		return false
+
+	for existing_origin in hexes[hex_index]["carts"].get(faction, []):
+		if _cart_goal_for_origin(int(existing_origin)) == goal_hex:
+			return true
+
+	return false
+
+
+func cart_can_advance(faction: int, from_hex: int, to_hex: int, origin_hex: int) -> bool:
 	if not are_adjacent(from_hex, to_hex):
 		return false
 
-	var goal_hex := int(CART_GOALS.get(origin_hex, -1))
+	var goal_hex := _cart_goal_for_origin(origin_hex)
 	if goal_hex < 0:
+		return false
+
+	if faction_has_cart_heading_to(faction, to_hex, goal_hex):
 		return false
 
 	var from_distance := _distance_to_hex(from_hex, goal_hex)
@@ -338,18 +356,49 @@ func _remove_cubes(faction: int, hex_index: int, amount: int) -> void:
 	_set_cube_count(faction, hex_index, cube_count_for(faction, hex_index) - amount)
 
 
+var last_cart_move: Dictionary = {
+	"moved": false,
+	"faction": -1,
+	"from_hex": -1,
+	"to_hex": -1,
+	"origin_hex": -1,
+}
+
+
+func _clear_last_cart_move() -> void:
+	last_cart_move = {
+		"moved": false,
+		"faction": -1,
+		"from_hex": -1,
+		"to_hex": -1,
+		"origin_hex": -1,
+	}
+
+
+func clear_last_cart_move() -> void:
+	_clear_last_cart_move()
+
+
 func advance_cart(faction: int, from_hex: int, to_hex: int) -> bool:
+	_clear_last_cart_move()
 	if not are_adjacent(from_hex, to_hex):
 		return false
 
 	var cart_origins: Array = hexes[from_hex]["carts"].get(faction, [])
 	for i in range(cart_origins.size()):
 		var origin_hex := int(cart_origins[i])
-		if not cart_can_advance(from_hex, to_hex, origin_hex):
+		if not cart_can_advance(faction, from_hex, to_hex, origin_hex):
 			continue
 		cart_origins.remove_at(i)
 		hexes[to_hex]["carts"][faction] = hexes[to_hex]["carts"].get(faction, [])
 		hexes[to_hex]["carts"][faction].append(origin_hex)
+		last_cart_move = {
+			"moved": true,
+			"faction": faction,
+			"from_hex": from_hex,
+			"to_hex": to_hex,
+			"origin_hex": origin_hex,
+		}
 		return true
 
 	return false
@@ -425,6 +474,10 @@ func create_cart(faction: int, hex_index: int) -> bool:
 	if not controls_hex(faction, hex_index):
 		return false
 	if cube_count_for(faction, hex_index) <= 0:
+		return false
+
+	var goal_hex := _cart_goal_for_origin(hex_index)
+	if faction_has_cart_heading_to(faction, hex_index, goal_hex):
 		return false
 
 	_remove_cubes(faction, hex_index, 1)

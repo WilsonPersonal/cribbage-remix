@@ -30,8 +30,14 @@ signal cut_card_updated(card: Dictionary)
 signal action_turn_updated(peer_id: int)
 signal action_history_changed(can_undo: bool)
 signal crib_resolution_updated(crib_cards: Array, resolved: Dictionary, resolver_peer: int)
+signal crib_cube_anim_requested(accept: bool, hex_index: int, faction_id: int, card_index: int, peer_id: int)
+signal action_cube_anim_requested(faction_id: int, from_hex: int, to_hex: int, move_count: int)
+signal action_cart_anim_requested(
+	faction_id: int, from_hex: int, to_hex: int, origin_hex: int
+)
 signal pegging_state_updated(sequence: Array, total: int, turn_peer: int)
 signal pegging_score_scored(peer_id: int, event_type: String, points: int)
+signal faction_score_scored(faction_id: int, points: int, old_rank: int, new_rank: int)
 signal crib_count_updated(count: int)
 signal game_message(message: String)
 signal active_control_changed(peer_id: int)
@@ -693,6 +699,8 @@ func request_faction_action(
 		_emit_undo_availability()
 		return
 
+	_board.clear_last_cart_move()
+
 	var success := false
 	match action_type:
 		ActionSystem.Type.PUSH:
@@ -722,6 +730,28 @@ func request_faction_action(
 
 	var cart_scores := _board.score_carts_on_goal()
 	_apply_faction_scores(cart_scores)
+
+	var anim_from_hex := -1
+	var anim_to_hex := -1
+	if action_type == ActionSystem.Type.PUSH and move_count > 0:
+		anim_from_hex = hex_index
+		anim_to_hex = target_hex
+	elif action_type == ActionSystem.Type.PULL and move_count > 0:
+		anim_from_hex = target_hex
+		anim_to_hex = hex_index
+
+	if anim_from_hex >= 0:
+		_notify_action_cube_anim(faction_id, anim_from_hex, anim_to_hex, move_count)
+
+	if bool(_board.last_cart_move.get("moved", false)):
+		var cart_move: Dictionary = _board.last_cart_move
+		_notify_action_cart_anim(
+			int(cart_move.get("faction", -1)),
+			int(cart_move.get("from_hex", -1)),
+			int(cart_move.get("to_hex", -1)),
+			int(cart_move.get("origin_hex", -1))
+		)
+
 	_broadcast_board()
 	_emit_undo_availability()
 
@@ -765,6 +795,7 @@ func request_undo_action() -> void:
 	faction_score_recency = snapshot.get("faction_score_recency", faction_score_recency)
 	_faction_score_recency_counter = int(snapshot.get("faction_score_recency_counter", _faction_score_recency_counter))
 	_apply_action_points(action_points)
+	_apply_faction_scores_state(faction_scores, faction_score_recency)
 	_sync_action_points.rpc(action_points)
 	_sync_faction_actions.rpc(player_faction_actions)
 	_sync_faction_scores.rpc(faction_scores, faction_score_recency)
@@ -1000,6 +1031,7 @@ func request_crib_card_choice(card_index: int, accept: bool, hex_index: int) -> 
 	resolved[card_index] = temp_resolved[card_index]
 	player_influence[peer_id] = influence
 	player_supply[peer_id] = supply
+	_notify_crib_cube_anim(accept, hex_index, _card_faction_id(card), card_index, peer_id)
 	_broadcast_influence()
 	_sync_supply.rpc(player_supply)
 	_broadcast_board()
@@ -1078,6 +1110,14 @@ func get_factions_by_rank() -> Array:
 		return a < b
 	)
 	return ranked
+
+
+func get_faction_rank_map() -> Dictionary:
+	var ranks := {}
+	var ranked := get_factions_by_rank()
+	for rank_index in range(ranked.size()):
+		ranks[ranked[rank_index]] = rank_index
+	return ranks
 
 
 func get_crib_discards_for_peer(peer_id: int) -> Array:
@@ -1743,6 +1783,9 @@ func _refund_faction_action(peer_id: int, faction_id: int, used_faction_token: b
 
 
 func _apply_faction_scores(scored: Dictionary) -> void:
+	var old_ranks := get_faction_rank_map()
+	var scoring_events: Array = []
+
 	for faction in Factions.ALL:
 		var points := int(scored.get(faction, 0))
 		if points <= 0:
@@ -1751,7 +1794,51 @@ func _apply_faction_scores(scored: Dictionary) -> void:
 		for _i in range(points):
 			_faction_score_recency_counter += 1
 			faction_score_recency[faction] = _faction_score_recency_counter
+		scoring_events.append({"faction_id": faction, "points": points})
+
+	var new_ranks := get_faction_rank_map()
+
+	for event in scoring_events:
+		var faction_id: int = event.get("faction_id", -1)
+		var points: int = int(event.get("points", 0))
+		if faction_id < 0 or points <= 0:
+			continue
+		_apply_faction_score_scored(
+			faction_id,
+			points,
+			int(old_ranks.get(faction_id, 0)),
+			int(new_ranks.get(faction_id, 0))
+		)
+
+	_apply_faction_scores_state(faction_scores, faction_score_recency)
 	_sync_faction_scores.rpc(faction_scores, faction_score_recency)
+
+	for event in scoring_events:
+		var faction_id: int = event.get("faction_id", -1)
+		var points: int = int(event.get("points", 0))
+		if faction_id < 0 or points <= 0:
+			continue
+		_sync_faction_score_scored.rpc(
+			faction_id,
+			points,
+			int(old_ranks.get(faction_id, 0)),
+			int(new_ranks.get(faction_id, 0))
+		)
+
+
+func _apply_faction_score_scored(
+	faction_id: int,
+	points: int,
+	old_rank: int,
+	new_rank: int
+) -> void:
+	faction_score_scored.emit(faction_id, points, old_rank, new_rank)
+
+
+func _apply_faction_scores_state(scores: Dictionary, recency: Dictionary) -> void:
+	faction_scores = scores
+	faction_score_recency = recency
+	faction_scores_updated.emit(faction_scores)
 
 
 func _finish_round() -> void:
@@ -1882,9 +1969,21 @@ func _sync_board(board_state: Array, faction_power: Dictionary) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _sync_faction_scores(scores: Dictionary, recency: Dictionary) -> void:
-	faction_scores = scores
-	faction_score_recency = recency
-	faction_scores_updated.emit(scores)
+	if multiplayer.is_server():
+		return
+	_apply_faction_scores_state(scores, recency)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_faction_score_scored(
+	faction_id: int,
+	points: int,
+	old_rank: int,
+	new_rank: int
+) -> void:
+	if multiplayer.is_server():
+		return
+	_apply_faction_score_scored(faction_id, points, old_rank, new_rank)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1936,6 +2035,74 @@ func _sync_pegging_score(peer_id: int, event_type: String, points: int) -> void:
 	if multiplayer.is_server():
 		return
 	_apply_pegging_score(peer_id, event_type, points)
+
+
+func _notify_crib_cube_anim(
+	accept: bool,
+	hex_index: int,
+	faction_id: int,
+	card_index: int,
+	peer_id: int
+) -> void:
+	crib_cube_anim_requested.emit(accept, hex_index, faction_id, card_index, peer_id)
+	_sync_crib_cube_anim.rpc(accept, hex_index, faction_id, card_index, peer_id)
+
+
+func _notify_action_cube_anim(
+	faction_id: int,
+	from_hex: int,
+	to_hex: int,
+	move_count: int
+) -> void:
+	action_cube_anim_requested.emit(faction_id, from_hex, to_hex, move_count)
+	_sync_action_cube_anim.rpc(faction_id, from_hex, to_hex, move_count)
+
+
+func _notify_action_cart_anim(
+	faction_id: int,
+	from_hex: int,
+	to_hex: int,
+	origin_hex: int
+) -> void:
+	action_cart_anim_requested.emit(faction_id, from_hex, to_hex, origin_hex)
+	_sync_action_cart_anim.rpc(faction_id, from_hex, to_hex, origin_hex)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_crib_cube_anim(
+	accept: bool,
+	hex_index: int,
+	faction_id: int,
+	card_index: int,
+	peer_id: int
+) -> void:
+	if multiplayer.is_server():
+		return
+	crib_cube_anim_requested.emit(accept, hex_index, faction_id, card_index, peer_id)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_action_cube_anim(
+	faction_id: int,
+	from_hex: int,
+	to_hex: int,
+	move_count: int
+) -> void:
+	if multiplayer.is_server():
+		return
+	action_cube_anim_requested.emit(faction_id, from_hex, to_hex, move_count)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_action_cart_anim(
+	faction_id: int,
+	from_hex: int,
+	to_hex: int,
+	origin_hex: int
+) -> void:
+	if multiplayer.is_server():
+		return
+	action_cart_anim_requested.emit(faction_id, from_hex, to_hex, origin_hex)
 
 
 @rpc("authority", "call_remote", "reliable")

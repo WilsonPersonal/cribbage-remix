@@ -3,6 +3,7 @@ extends Control
 const HUD_WIDTH_RATIO := 0.28
 const MAIN_WIDTH_RATIO := 0.72
 const CARD_PANEL_HEIGHT := 200
+const CUBE_MOVE_SPIN_MAX := 5
 const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 
 @onready var hud: PanelContainer = $HUD
@@ -10,7 +11,7 @@ const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 @onready var phase_label: Label = $HUD/Margin/VBox/PhaseLabel
 @onready var pegging_count_label: Label = $HUD/Margin/VBox/PeggingCountLabel
 @onready var pegging_turn_label: Label = $HUD/Margin/VBox/PeggingTurnLabel
-@onready var influence_display: Control = $HUD/Margin/VBox/InfluenceDisplay
+@onready var influence_display: VBoxContainer = $HUD/Margin/VBox/InfluenceDisplay
 @onready var coins_label: Label = $HUD/Margin/VBox/CoinsLabel
 @onready var crib_discards_label: Label = $HUD/Margin/VBox/CribDiscardsLabel
 @onready var action_points_label: Label = $HUD/Margin/VBox/ActionPointsLabel
@@ -60,6 +61,9 @@ func _ready() -> void:
 	GameState.board_updated.connect(_on_board_updated)
 	GameState.action_turn_updated.connect(_on_action_turn_updated)
 	GameState.action_history_changed.connect(_on_action_history_changed)
+	GameState.crib_cube_anim_requested.connect(_on_crib_cube_anim_requested)
+	GameState.action_cube_anim_requested.connect(_on_action_cube_anim_requested)
+	GameState.action_cart_anim_requested.connect(_on_action_cart_anim_requested)
 	NetworkManager.player_connected.connect(_on_player_connected)
 	NetworkManager.player_disconnected.connect(_on_player_disconnected)
 
@@ -99,6 +103,7 @@ func _ready() -> void:
 
 	_apply_panel_style(hud)
 	_apply_hud_content_width()
+	_setup_cube_count_spin()
 	resized.connect(_apply_layout)
 	call_deferred("_apply_layout")
 	_refresh_ui()
@@ -184,6 +189,137 @@ func _on_action_turn_updated(_peer_id: int) -> void:
 func _on_board_updated(_board_state: Array, _faction_power: Dictionary) -> void:
 	if _selected_source_hex >= 0:
 		_update_action_highlights()
+
+
+func _on_crib_cube_anim_requested(
+	accept: bool,
+	hex_index: int,
+	faction_id: int,
+	card_index: int,
+	peer_id: int
+) -> void:
+	var from_pos: Vector2
+	var to_pos: Vector2
+	var end_radius := FlyingCube.MAP_CUBE_RADIUS
+	var on_complete := _clear_crib_cube_anim_visuals
+
+	if accept:
+		influence_display.set_crib_influence_anim_mask(peer_id, faction_id)
+		from_pos = board.get_faction_cube_dot_global_before_remove(hex_index, faction_id)
+		to_pos = influence_display.get_last_dot_global(peer_id)
+		end_radius = influence_display.DOT_RADIUS
+	else:
+		board.set_crib_cube_anim_mask(hex_index, faction_id)
+		from_pos = card_panel.get_crib_card_global_center(card_index)
+		to_pos = board.get_faction_cube_dot_global_after_add(hex_index, faction_id)
+
+	FlyingCube.fly(
+		self,
+		from_pos,
+		to_pos,
+		Factions.COLORS[faction_id],
+		FlyingCube.MAP_CUBE_RADIUS,
+		FlyingCube.DEFAULT_DURATION,
+		end_radius,
+		0.0,
+		on_complete
+	)
+
+
+func _clear_crib_cube_anim_visuals() -> void:
+	board.clear_crib_cube_anim_mask()
+	influence_display.clear_crib_influence_anim_mask()
+
+
+func _on_action_cube_anim_requested(
+	faction_id: int,
+	from_hex: int,
+	to_hex: int,
+	move_count: int
+) -> void:
+	if move_count <= 0:
+		return
+
+	board.set_action_cube_anim_mask(from_hex, to_hex, faction_id, move_count)
+
+	var remaining := move_count
+	var on_cube_landed := func() -> void:
+		board.reveal_action_cube_at_destination()
+		remaining -= 1
+		if remaining <= 0:
+			board.clear_action_cube_anim_mask()
+
+	var source_count := GameState.get_faction_cubes_on_hex(from_hex, faction_id)
+	var dest_count := GameState.get_faction_cubes_on_hex(to_hex, faction_id)
+	var color: Color = Factions.COLORS[faction_id]
+
+	for cube_index in range(move_count):
+		var from_pos: Vector2 = board.get_faction_cube_dot_global_at_index_with_extra(
+			from_hex,
+			faction_id,
+			source_count + cube_index,
+			move_count
+		)
+		var to_pos: Vector2 = board.get_faction_cube_dot_global_at_index(
+			to_hex,
+			faction_id,
+			dest_count - move_count + cube_index
+		)
+		FlyingCube.fly(
+			self,
+			from_pos,
+			to_pos,
+			color,
+			FlyingCube.MAP_CUBE_RADIUS,
+			FlyingCube.DEFAULT_DURATION,
+			-1.0,
+			float(cube_index) * 0.07,
+			on_cube_landed
+		)
+
+
+func _on_action_cart_anim_requested(
+	faction_id: int,
+	from_hex: int,
+	to_hex: int,
+	origin_hex: int
+) -> void:
+	if from_hex < 0 or to_hex < 0 or origin_hex < 0:
+		return
+
+	board.set_action_cart_anim_mask(from_hex, to_hex, faction_id, origin_hex)
+
+	var on_cart_landed := func() -> void:
+		board.reveal_action_cart_at_destination()
+		board.clear_action_cart_anim_mask()
+
+	var from_pos: Vector2 = board.get_cart_arrow_global_midpoint(
+		from_hex,
+		faction_id,
+		origin_hex,
+		true
+	)
+	var to_pos: Vector2 = board.get_cart_arrow_global_midpoint(
+		to_hex,
+		faction_id,
+		origin_hex,
+		true
+	)
+	var from_dir: Vector2 = board.get_cart_arrow_global_direction(from_hex, origin_hex)
+	var to_dir: Vector2 = board.get_cart_arrow_global_direction(to_hex, origin_hex)
+	var color: Color = Factions.COLORS[faction_id]
+
+	FlyingCart.fly(
+		self,
+		from_pos,
+		to_pos,
+		color,
+		from_dir,
+		to_dir,
+		FlyingCart.DEFAULT_DURATION,
+		0.0,
+		on_cart_landed
+	)
 
 
 func _on_player_connected(peer_id: int) -> void:
@@ -459,7 +595,6 @@ func _try_push(hex_index: int, peer_id: int) -> void:
 			return
 
 		_selected_source_hex = hex_index
-		_set_cube_count_max(max_cubes)
 		action_help_label.text = "Push %s: click an adjacent hex." % Factions.name_for(faction_id)
 		_update_action_highlights()
 		return
@@ -523,7 +658,6 @@ func _try_pull(hex_index: int, peer_id: int) -> void:
 		)
 		return
 
-	_set_cube_count_max(max_cubes)
 	var cube_count := mini(roundi(cube_count_spin.value), max_cubes)
 	if cube_count <= 0:
 		action_help_label.text = "No cubes or actions available to pull."
@@ -542,20 +676,14 @@ func _try_pull(hex_index: int, peer_id: int) -> void:
 	_update_action_highlights()
 
 
+func _setup_cube_count_spin() -> void:
+	cube_count_spin.min_value = 1.0
+	cube_count_spin.max_value = float(CUBE_MOVE_SPIN_MAX)
+	cube_count_spin.value = clampf(cube_count_spin.value, 1.0, float(CUBE_MOVE_SPIN_MAX))
+
+
 func _effective_cube_max(_peer_id: int, faction_id: int, hex_index: int) -> int:
 	return GameState.get_faction_cubes_on_hex(hex_index, faction_id)
-
-
-func _set_cube_count_max(max_cubes: int) -> void:
-	if max_cubes <= 0:
-		cube_count_spin.max_value = 1.0
-		cube_count_spin.value = 1.0
-		return
-	cube_count_spin.max_value = float(maxi(1, max_cubes))
-	if cube_count_spin.value > max_cubes:
-		cube_count_spin.value = max_cubes
-	elif cube_count_spin.value < 1:
-		cube_count_spin.value = 1
 
 
 func _update_cube_count_visibility() -> void:

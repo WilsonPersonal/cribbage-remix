@@ -138,8 +138,7 @@ layout_mode = 2
 text = "Faction shop actions: none yet"
 autowrap_mode = 3
 
-[node name="InfluenceDisplay" type="Control" parent="HUD/Margin/VBox"]
-custom_minimum_size = Vector2(0, 16)
+[node name="InfluenceDisplay" type="VBoxContainer" parent="HUD/Margin/VBox"]
 layout_mode = 2
 size_flags_horizontal = 3
 script = ExtResource("4_influence")
@@ -227,7 +226,7 @@ text = "Cubes to move:"
 [node name="CubeCountSpin" type="SpinBox" parent="HUD/Margin/VBox/ActionPanel/CubeCountRow"]
 layout_mode = 2
 min_value = 1.0
-max_value = 20.0
+max_value = 5.0
 value = 1.0
 rounded = true
 
