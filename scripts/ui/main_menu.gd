@@ -73,15 +73,10 @@ func _enter_game() -> void:
 	if player_name.is_empty():
 		player_name = "Player"
 
+	if not NetworkManager.is_offline_debug():
+		GameState.prepare_online_session()
+	GameState.set_pending_local_player_name(player_name)
 	get_tree().change_scene_to_packed(GAME_SCENE)
-	call_deferred("_register_player", player_name)
-
-
-func _register_player(player_name: String) -> void:
-	if NetworkManager.is_server():
-		GameState.register_player(NetworkManager.get_local_peer_id(), player_name)
-	else:
-		GameState.request_player_name.rpc_id(1, player_name)
 
 
 func _read_port() -> int:

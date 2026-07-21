@@ -41,9 +41,11 @@ signal faction_score_scored(faction_id: int, points: int, old_rank: int, new_ran
 signal crib_count_updated(count: int)
 signal game_message(message: String)
 signal active_control_changed(peer_id: int)
+signal lobby_updated
 
 var offline_debug_mode: bool = false
 var active_control_peer_id: int = 1
+var pending_local_player_name: String = ""
 
 var current_phase: Phase = Phase.WAITING
 var round_number: int = 0
@@ -113,6 +115,75 @@ func setup_offline_session(player_one_name: String = "Player 1", player_two_name
 	register_player(2, player_two_name)
 	set_active_control_peer(1)
 	_broadcast_message("Offline debug: switch players to control each seat. Dealing cards...")
+
+
+func set_pending_local_player_name(player_name: String) -> void:
+	pending_local_player_name = player_name.strip_edges()
+
+
+func consume_pending_local_player_name() -> String:
+	var player_name := pending_local_player_name.strip_edges()
+	pending_local_player_name = ""
+	if player_name.is_empty():
+		return "Player %d" % multiplayer.get_unique_id()
+	return player_name
+
+
+func prepare_online_session() -> void:
+	if NetworkManager.is_offline_debug():
+		return
+
+	offline_debug_mode = false
+	player_names.clear()
+	player_influence.clear()
+	player_supply.clear()
+	player_coins.clear()
+	action_points.clear()
+	player_faction_actions.clear()
+	player_crib_discards.clear()
+	hands.clear()
+	local_hand.clear()
+	active_player_order.clear()
+	crib.clear()
+	cut_card.clear()
+	show_hands.clear()
+	discard_ready.clear()
+	action_players_finished.clear()
+	_action_undo_stack.clear()
+	_board_setup_complete = false
+	_board.reset()
+	round_number = 0
+	ending_round_triggered = false
+	dealer_peer_id = 1
+	crib_owner_peer_id = 0
+	faction_scores = {
+		Factions.Id.CLUBS: 0,
+		Factions.Id.HEARTS: 0,
+		Factions.Id.DIAMONDS: 0,
+	}
+	faction_score_recency = {
+		Factions.Id.CLUBS: 0,
+		Factions.Id.HEARTS: 0,
+		Factions.Id.DIAMONDS: 0,
+	}
+	_faction_score_recency_counter = 0
+
+	if NetworkManager.is_server():
+		_set_phase(Phase.WAITING)
+	else:
+		current_phase = Phase.WAITING
+
+	lobby_updated.emit()
+
+
+func submit_local_player_name(player_name: String = "") -> void:
+	var cleaned := player_name.strip_edges()
+	if cleaned.is_empty():
+		cleaned = consume_pending_local_player_name()
+	if NetworkManager.is_server():
+		register_player(multiplayer.get_unique_id(), cleaned)
+	else:
+		request_player_name.rpc_id(1, cleaned)
 
 
 func get_control_peer_id() -> int:
@@ -367,6 +438,22 @@ func register_player(peer_id: int, player_name: String = "") -> void:
 	_sync_faction_scores.rpc(faction_scores, faction_score_recency)
 	_ensure_board_setup()
 	_broadcast_board()
+	lobby_updated.emit()
+	_try_auto_start_online_round()
+
+
+func _try_auto_start_online_round() -> void:
+	if not NetworkManager.is_server() or NetworkManager.is_offline_debug():
+		return
+	if current_phase != Phase.WAITING:
+		return
+	if get_player_count() < RemixRules.MIN_PLAYERS:
+		return
+
+	_broadcast_message(
+		"Starting round with %d players." % get_player_count()
+	)
+	start_new_round()
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -501,9 +588,6 @@ func request_pegging_play(hand_index: int) -> void:
 	for event in PeggingRules.score_events(pegging_sequence, pegging_total):
 		grant_pegging_coins(peer_id, event)
 
-	if hand.is_empty() and not played_to_thirty_one:
-		grant_pegging_coins(peer_id, "last_card")
-
 	_send_local_hand(peer_id, hand)
 
 	if played_to_thirty_one:
@@ -511,7 +595,8 @@ func request_pegging_play(hand_index: int) -> void:
 		pegging_sequence.clear()
 
 	if _all_hands_empty():
-		if hand.is_empty() and not played_to_thirty_one:
+		if not played_to_thirty_one:
+			grant_pegging_coins(peer_id, "last_card")
 			_schedule_finish_pegging(1.1)
 		else:
 			_finish_pegging()
@@ -943,6 +1028,9 @@ func _broadcast_crib_resolution_state(
 	resolver_peer: int
 ) -> void:
 	crib_resolver_peer_id = resolver_peer
+	if current_phase == Phase.SETUP_MINI_CRIB:
+		mini_crib_resolving_peer = resolver_peer
+
 	if offline_debug_mode:
 		local_crib = cards.duplicate(true)
 		local_crib_resolved = resolved.duplicate(true)
@@ -950,13 +1038,17 @@ func _broadcast_crib_resolution_state(
 		_update_offline_active_player()
 		return
 
-	if multiplayer.is_server():
-		if resolver_peer == multiplayer.get_unique_id():
-			local_crib = cards.duplicate(true)
-			local_crib_resolved = resolved.duplicate(true)
-			crib_resolution_updated.emit(local_crib, local_crib_resolved, resolver_peer)
-		elif resolver_peer > 0:
-			_sync_crib_resolution.rpc_id(resolver_peer, cards, resolved, resolver_peer)
+	if not multiplayer.is_server():
+		return
+
+	_sync_crib_resolver.rpc(resolver_peer)
+
+	if resolver_peer == multiplayer.get_unique_id():
+		local_crib = cards.duplicate(true)
+		local_crib_resolved = resolved.duplicate(true)
+		crib_resolution_updated.emit(local_crib, local_crib_resolved, resolver_peer)
+	elif resolver_peer > 0:
+		_sync_crib_resolution.rpc_id(resolver_peer, cards, resolved, resolver_peer)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -1914,7 +2006,10 @@ func _apply_phase(phase: Phase) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _sync_player_names(names: Dictionary) -> void:
+	if multiplayer.is_server():
+		return
 	player_names = names
+	lobby_updated.emit()
 
 
 func _broadcast_influence() -> void:
@@ -2018,10 +2113,23 @@ func _sync_action_turn(peer_id: int) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
+func _sync_crib_resolver(resolver_peer: int) -> void:
+	if multiplayer.is_server():
+		return
+	crib_resolver_peer_id = resolver_peer
+	if current_phase == Phase.SETUP_MINI_CRIB:
+		mini_crib_resolving_peer = resolver_peer
+
+
+@rpc("authority", "call_remote", "reliable")
 func _sync_crib_resolution(crib_cards: Array, resolved: Dictionary, resolver_peer: int) -> void:
+	if multiplayer.is_server():
+		return
 	local_crib = crib_cards.duplicate(true)
 	local_crib_resolved = resolved.duplicate(true)
 	crib_resolver_peer_id = resolver_peer
+	if current_phase == Phase.SETUP_MINI_CRIB:
+		mini_crib_resolving_peer = resolver_peer
 	crib_resolution_updated.emit(local_crib, local_crib_resolved, resolver_peer)
 
 

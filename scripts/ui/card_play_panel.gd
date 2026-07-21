@@ -223,6 +223,7 @@ func _on_crib_resolution_updated(crib_cards: Array, resolved: Dictionary, _resol
 	if _crib_choices.has(_selected_crib_card):
 		_selected_crib_card = -1
 	_clear_crib_placement_mode()
+	_update_crib_visibility(GameState.current_phase)
 	_refresh_crib_display()
 	_update_crib_help()
 	_update_crib_action_buttons_visibility()

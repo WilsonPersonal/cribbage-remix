@@ -64,6 +64,7 @@ func _ready() -> void:
 	GameState.crib_cube_anim_requested.connect(_on_crib_cube_anim_requested)
 	GameState.action_cube_anim_requested.connect(_on_action_cube_anim_requested)
 	GameState.action_cart_anim_requested.connect(_on_action_cart_anim_requested)
+	GameState.lobby_updated.connect(_on_lobby_updated)
 	NetworkManager.player_connected.connect(_on_player_connected)
 	NetworkManager.player_disconnected.connect(_on_player_disconnected)
 
@@ -98,8 +99,7 @@ func _ready() -> void:
 		call_deferred("_auto_start_offline_round")
 	else:
 		offline_bar.visible = false
-		if NetworkManager.is_server():
-			GameState.register_player(NetworkManager.get_local_peer_id())
+		call_deferred("_register_online_players")
 
 	_apply_panel_style(hud)
 	_apply_hud_content_width()
@@ -320,6 +320,25 @@ func _on_action_cart_anim_requested(
 		0.0,
 		on_cart_landed
 	)
+
+
+func _register_online_players() -> void:
+	if NetworkManager.is_offline_debug():
+		return
+
+	var player_name := GameState.consume_pending_local_player_name()
+	if NetworkManager.is_server():
+		GameState.register_player(NetworkManager.get_local_peer_id(), player_name)
+		for peer_id in multiplayer.get_peers():
+			GameState.register_player(peer_id)
+	else:
+		GameState.submit_local_player_name(player_name)
+
+	_refresh_ui()
+
+
+func _on_lobby_updated() -> void:
+	_refresh_ui()
 
 
 func _on_player_connected(peer_id: int) -> void:
@@ -735,12 +754,29 @@ func _update_action_help() -> void:
 
 
 func _refresh_ui() -> void:
-	var player_count := GameState.get_player_count() if NetworkManager.is_offline_debug() else multiplayer.get_peers().size() + 1
+	var player_count := GameState.get_player_count()
 	if NetworkManager.is_offline_debug():
 		status_label.text = "Offline debug | %d local players" % player_count
 		var control_id := GameState.get_control_peer_id()
 		var control_name: String = GameState.player_names.get(control_id, "Player %d" % control_id)
 		control_peer_label.text = "Controlling: %s" % control_name
+	elif GameState.current_phase == GameState.Phase.WAITING:
+		if NetworkManager.is_server():
+			if player_count < RemixRules.MIN_PLAYERS:
+				status_label.text = "Host | waiting for players (%d/%d)" % [
+					player_count,
+					RemixRules.MIN_PLAYERS,
+				]
+			else:
+				status_label.text = "Host | %d players connected" % player_count
+		else:
+			if player_count < RemixRules.MIN_PLAYERS:
+				status_label.text = "Connected | waiting for players (%d/%d)" % [
+					player_count,
+					RemixRules.MIN_PLAYERS,
+				]
+			else:
+				status_label.text = "Connected | %d players ready" % player_count
 	elif NetworkManager.is_server():
 		status_label.text = "Host | %d player(s) connected" % player_count
 	else:
