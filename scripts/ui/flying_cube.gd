@@ -11,8 +11,7 @@ var _radius: float = DEFAULT_RADIUS
 
 func _draw() -> void:
 	var center := Vector2(_radius, _radius)
-	draw_circle(center, _radius, _color)
-	draw_arc(center, _radius, 0.0, TAU, 16, Color(0.0, 0.0, 0.0, 0.35), 1.0)
+	Factions.draw_cube(self, center, _radius, _color)
 
 
 func _set_radius(new_radius: float) -> void:

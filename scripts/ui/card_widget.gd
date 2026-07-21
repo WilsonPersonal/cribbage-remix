@@ -13,7 +13,8 @@ func setup(index: int, data: Dictionary) -> void:
 	custom_minimum_size = Vector2(64, 92)
 	text = "%s\n%s" % [data.get("rank", "?"), _suit_symbol(data.get("suit", ""))]
 	modulate = _suit_color(data.get("suit", ""))
-	pressed.connect(_on_pressed)
+	if not pressed.is_connected(_on_pressed):
+		pressed.connect(_on_pressed)
 
 
 func _on_pressed() -> void:
@@ -28,6 +29,8 @@ func _suit_symbol(suit: String) -> String:
 			return "D"
 		"clubs":
 			return "C"
+		"spades":
+			return "S*"
 		_:
 			return "?"
 
@@ -40,5 +43,7 @@ func _suit_color(suit: String) -> Color:
 			return Color("#a8c8ff")
 		"clubs":
 			return Color("#cccccc")
+		"spades":
+			return Color("#d4b8ff")
 		_:
 			return Color.WHITE

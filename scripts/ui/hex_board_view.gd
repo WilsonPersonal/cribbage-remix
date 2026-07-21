@@ -23,6 +23,8 @@ var _board_state: Array = []
 var _faction_power: Dictionary = {}
 var _action_selected_hex: int = -1
 var _action_target_hexes: Array = []
+var _shop_dominance_hexes: Array = []
+var _shop_dominance_faction: int = -1
 var _crib_target_hexes: Array = []
 var _crib_anim_mask: Dictionary = {}
 var _action_anim_mask: Dictionary = {}
@@ -54,6 +56,7 @@ func _ready() -> void:
 func _on_phase_changed(_phase: GameState.Phase) -> void:
 	clear_action_selection()
 	clear_crib_selection()
+	clear_shop_dominance_highlights()
 
 
 func clear_action_selection() -> void:
@@ -205,6 +208,18 @@ func set_crib_selection(target_hexes: Array) -> void:
 func set_action_selection(selected_hex: int, target_hexes: Array = []) -> void:
 	_action_selected_hex = selected_hex
 	_action_target_hexes = target_hexes.duplicate()
+	queue_redraw()
+
+
+func set_shop_dominance_highlights(hexes: Array, faction_id: int) -> void:
+	_shop_dominance_hexes = hexes.duplicate()
+	_shop_dominance_faction = faction_id
+	queue_redraw()
+
+
+func clear_shop_dominance_highlights() -> void:
+	_shop_dominance_hexes.clear()
+	_shop_dominance_faction = -1
 	queue_redraw()
 
 
@@ -521,7 +536,7 @@ func _draw_legend() -> void:
 		if glow > 0.0:
 			dot_color = dot_color.lightened(0.25 + glow * 0.2)
 		var dot_radius := 5.0 + glow * 2.5
-		draw_circle(Vector2(18.0, y - 4.0), dot_radius, dot_color)
+		Factions.draw_cube(self, Vector2(18.0, y - 4.0), dot_radius, dot_color)
 
 		var text_color := LEGEND_TEXT_COLOR
 		if glow > 0.0:
@@ -564,6 +579,13 @@ func _draw_legend() -> void:
 
 
 func _draw_action_highlights(centers: Array) -> void:
+	for hex_index in _shop_dominance_hexes:
+		var dominance_index := int(hex_index)
+		if dominance_index >= 0 and dominance_index < centers.size():
+			var ring_color: Color = Factions.COLORS.get(_shop_dominance_faction, Color.WHITE)
+			ring_color.a = 0.95
+			_draw_hex_ring(centers[dominance_index], ring_color.lightened(0.2), 3.0)
+
 	for hex_index in _crib_target_hexes:
 		var crib_index := int(hex_index)
 		if crib_index >= 0 and crib_index < centers.size():
@@ -843,8 +865,7 @@ func _draw_cube_dots(center: Vector2, cubes: Dictionary) -> void:
 
 	for dot_index in range(dot_colors.size()):
 		var pos := _cube_dot_local_pos(center, dot_colors.size(), dot_index)
-		draw_circle(pos, CUBE_DOT_RADIUS, dot_colors[dot_index])
-		draw_arc(pos, CUBE_DOT_RADIUS, 0.0, TAU, 16, Color(0.0, 0.0, 0.0, 0.35), 1.0)
+		Factions.draw_cube(self, pos, CUBE_DOT_RADIUS, dot_colors[dot_index])
 
 
 const CUBE_DOT_RADIUS := 4.5

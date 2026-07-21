@@ -2,20 +2,28 @@ extends Control
 
 const HUD_WIDTH_RATIO := 0.28
 const MAIN_WIDTH_RATIO := 0.72
+const SHOP_PANEL_WIDTH_RATIO := MAIN_WIDTH_RATIO / 3.0
 const CARD_PANEL_HEIGHT := 200
+const SHOP_PANEL_HEIGHT := 132
 const CUBE_MOVE_SPIN_MAX := 5
 const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 
 @onready var hud: PanelContainer = $HUD
+@onready var shop_panel: PanelContainer = $ShopPanel
 @onready var status_label: Label = $HUD/Margin/VBox/StatusLabel
 @onready var phase_label: Label = $HUD/Margin/VBox/PhaseLabel
 @onready var pegging_count_label: Label = $HUD/Margin/VBox/PeggingCountLabel
 @onready var pegging_turn_label: Label = $HUD/Margin/VBox/PeggingTurnLabel
 @onready var influence_display: VBoxContainer = $HUD/Margin/VBox/InfluenceDisplay
 @onready var coins_label: Label = $HUD/Margin/VBox/CoinsLabel
-@onready var crib_discards_label: Label = $HUD/Margin/VBox/CribDiscardsLabel
+@onready var crib_reminder_panel: VBoxContainer = $HUD/Margin/VBox/CribReminderPanel
+@onready var crib_owner_label: Label = $HUD/Margin/VBox/CribReminderPanel/CribOwnerLabel
+@onready var crib_discards_row: HBoxContainer = $HUD/Margin/VBox/CribReminderPanel/CribDiscardsRow
+@onready var crib_discard_cubes = $HUD/Margin/VBox/CribReminderPanel/CribDiscardsRow/CribDiscardCubes
 @onready var action_points_label: Label = $HUD/Margin/VBox/ActionPointsLabel
-@onready var faction_actions_label: Label = $HUD/Margin/VBox/FactionActionsLabel
+@onready var show_action_scoring_button: Button = $HUD/Margin/VBox/ShowActionScoringButton
+@onready var action_scoring_panel: PanelContainer = $HUD/Margin/VBox/ActionScoringPanel
+@onready var action_scoring_label: Label = $HUD/Margin/VBox/ActionScoringPanel/ActionScoringLabel
 @onready var start_round_button: Button = $HUD/Margin/VBox/StartRoundButton
 @onready var end_shop_button: Button = $HUD/Margin/VBox/EndShopButton
 @onready var end_actions_button: Button = $HUD/Margin/VBox/EndActionsButton
@@ -26,6 +34,11 @@ const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 @onready var action_panel: VBoxContainer = $HUD/Margin/VBox/ActionPanel
 @onready var actions_left_big_label: Label = $HUD/Margin/VBox/ActionPanel/ActionsLeftBigLabel
 @onready var action_help_label: Label = $HUD/Margin/VBox/ActionPanel/ActionHelpLabel
+@onready var faction_buttons: HBoxContainer = $HUD/Margin/VBox/ActionPanel/FactionButtons
+@onready var clubs_faction_button: Button = $HUD/Margin/VBox/ActionPanel/FactionButtons/ClubsFactionButton
+@onready var hearts_faction_button: Button = $HUD/Margin/VBox/ActionPanel/FactionButtons/HeartsFactionButton
+@onready var diamonds_faction_button: Button = $HUD/Margin/VBox/ActionPanel/FactionButtons/DiamondsFactionButton
+@onready var action_buttons: HBoxContainer = $HUD/Margin/VBox/ActionPanel/ActionButtons
 @onready var cube_count_row: HBoxContainer = $HUD/Margin/VBox/ActionPanel/CubeCountRow
 @onready var cube_count_spin: SpinBox = $HUD/Margin/VBox/ActionPanel/CubeCountRow/CubeCountSpin
 @onready var move_cart_check: CheckBox = $HUD/Margin/VBox/ActionPanel/CubeCountRow/MoveCartCheck
@@ -44,6 +57,7 @@ const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 
 var _selected_action_type: int = -1
 var _selected_source_hex: int = -1
+var _shop_jack_source_hex: int = -1
 
 
 func _ready() -> void:
@@ -61,10 +75,15 @@ func _ready() -> void:
 	GameState.board_updated.connect(_on_board_updated)
 	GameState.action_turn_updated.connect(_on_action_turn_updated)
 	GameState.action_history_changed.connect(_on_action_history_changed)
+	GameState.shop_action_pending_updated.connect(_on_shop_action_pending_updated)
 	GameState.crib_cube_anim_requested.connect(_on_crib_cube_anim_requested)
 	GameState.action_cube_anim_requested.connect(_on_action_cube_anim_requested)
 	GameState.action_cart_anim_requested.connect(_on_action_cart_anim_requested)
 	GameState.lobby_updated.connect(_on_lobby_updated)
+	GameState.show_hands_updated.connect(_on_show_hands_updated)
+	GameState.crib_discards_updated.connect(_on_crib_discards_updated)
+	GameState.round_context_updated.connect(_on_round_context_updated)
+	GameState.cut_card_updated.connect(_on_cut_card_updated_for_scoring)
 	NetworkManager.player_connected.connect(_on_player_connected)
 	NetworkManager.player_disconnected.connect(_on_player_disconnected)
 
@@ -85,6 +104,7 @@ func _ready() -> void:
 	switch_player_button.pressed.connect(_on_switch_player_pressed)
 	save_debug_button.pressed.connect(_on_save_debug_pressed)
 	load_debug_button.pressed.connect(_on_load_debug_pressed)
+	show_action_scoring_button.pressed.connect(_on_show_action_scoring_pressed)
 	board.hex_clicked.connect(_on_board_hex_clicked)
 
 	push_button.pressed.connect(_on_push_pressed)
@@ -92,6 +112,9 @@ func _ready() -> void:
 	cart_button.pressed.connect(_on_cart_pressed)
 	undo_action_button.pressed.connect(_on_undo_action_pressed)
 	clear_action_button.pressed.connect(_on_clear_action_pressed)
+	clubs_faction_button.pressed.connect(func() -> void: _on_shop_faction_picked(Factions.Id.CLUBS))
+	hearts_faction_button.pressed.connect(func() -> void: _on_shop_faction_picked(Factions.Id.HEARTS))
+	diamonds_faction_button.pressed.connect(func() -> void: _on_shop_faction_picked(Factions.Id.DIAMONDS))
 
 	if NetworkManager.is_offline_debug():
 		offline_bar.visible = true
@@ -102,6 +125,9 @@ func _ready() -> void:
 		call_deferred("_register_online_players")
 
 	_apply_panel_style(hud)
+	_apply_panel_style(shop_panel)
+	_apply_panel_style(action_scoring_panel)
+	hud.clip_contents = true
 	_apply_hud_content_width()
 	_setup_cube_count_spin()
 	resized.connect(_apply_layout)
@@ -123,17 +149,39 @@ func _apply_panel_style(panel: PanelContainer) -> void:
 
 func _apply_hud_content_width() -> void:
 	var hud_content := hud.get_node("Margin/VBox")
-	for child in hud_content.get_children():
+	_configure_hud_control_width(hud_content)
+
+
+func _configure_hud_control_width(node: Node) -> void:
+	for child in node.get_children():
 		if child is Control:
 			child.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			child.custom_minimum_size.x = 0
 			if child is Label:
 				child.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		if child.get_child_count() > 0:
+			_configure_hud_control_width(child)
 	influence_display.custom_minimum_size.x = 0
 
 
 func _apply_layout() -> void:
 	var main_right := MAIN_WIDTH_RATIO
 	var card_height := float(CARD_PANEL_HEIGHT)
+	var shop_height := float(SHOP_PANEL_HEIGHT)
+	var in_actions := GameState.current_phase == GameState.Phase.SPEND_ACTIONS
+	var board_top := shop_height if in_actions else 0.0
+
+	shop_panel.visible = in_actions
+	shop_panel.set_anchors_preset(Control.PRESET_TOP_LEFT, true)
+	shop_panel.anchor_left = main_right - SHOP_PANEL_WIDTH_RATIO
+	shop_panel.anchor_top = 0.0
+	shop_panel.anchor_right = main_right
+	shop_panel.anchor_bottom = 0.0
+	shop_panel.offset_left = 0.0
+	shop_panel.offset_top = 0.0
+	shop_panel.offset_right = 0.0
+	shop_panel.offset_bottom = shop_height
+	shop_panel.z_index = 2
 
 	hud.set_anchors_preset(Control.PRESET_TOP_RIGHT, true)
 	hud.anchor_left = main_right
@@ -152,7 +200,7 @@ func _apply_layout() -> void:
 	board.anchor_right = main_right
 	board.anchor_bottom = 1.0
 	board.offset_left = 0.0
-	board.offset_top = 0.0
+	board.offset_top = board_top
 	board.offset_right = 0.0
 	board.offset_bottom = -card_height
 
@@ -178,6 +226,60 @@ func _on_undo_action_pressed() -> void:
 	GameState.submit_undo_action()
 
 
+func _on_shop_action_pending_updated(pending: Dictionary) -> void:
+	_shop_jack_source_hex = -1
+	board.clear_action_selection()
+
+	if GameState.current_phase != GameState.Phase.SPEND_ACTIONS:
+		_update_shop_action_panel()
+		return
+	if not GameState.is_action_turn_for_control():
+		_update_shop_action_panel()
+		return
+
+	if pending.is_empty():
+		action_help_label.text = "Choose Push, Pull, or Cart, then click the map."
+		_update_shop_action_panel()
+		_update_shop_dominance_highlights()
+		return
+
+	var effect := str(pending.get("effect", Shop.EFFECT_QUEEN))
+	match effect:
+		Shop.EFFECT_JACK:
+			if GameState.pending_shop_needs_faction_choice():
+				action_help_label.text = "Jack (wild): choose a faction to push."
+			else:
+				var faction_id := GameState.get_pending_shop_deploy_faction()
+				action_help_label.text = (
+					"Jack: click a hex with a %s cube, then an adjacent hex."
+					% Factions.name_for(faction_id)
+				)
+		Shop.EFFECT_KING:
+			if GameState.pending_shop_needs_faction_choice():
+				action_help_label.text = "King (wild): choose a faction to deploy."
+			else:
+				var faction_id := GameState.get_pending_shop_deploy_faction()
+				action_help_label.text = (
+					"King: click a hex to deploy 1 %s cube."
+					% Factions.name_for(faction_id)
+				)
+		_:
+			var faction_id := int(pending.get("faction_id", -1))
+			if faction_id == Factions.Id.SPADES:
+				action_help_label.text = (
+					"Shop purchase: take a Push, Pull, or Cart action using any faction you control."
+				)
+			else:
+				action_help_label.text = (
+					"Shop purchase: take a %s Push, Pull, or Cart action on highlighted hexes."
+					% Factions.name_for(faction_id)
+				)
+			_select_action(ActionSystem.Type.PUSH)
+
+	_update_shop_action_panel()
+	_update_shop_dominance_highlights()
+
+
 func _on_action_turn_updated(_peer_id: int) -> void:
 	_clear_action_selection()
 	_update_action_phase_ui()
@@ -189,6 +291,7 @@ func _on_action_turn_updated(_peer_id: int) -> void:
 func _on_board_updated(_board_state: Array, _faction_power: Dictionary) -> void:
 	if _selected_source_hex >= 0:
 		_update_action_highlights()
+	_update_shop_dominance_highlights()
 
 
 func _on_crib_cube_anim_requested(
@@ -341,6 +444,19 @@ func _on_lobby_updated() -> void:
 	_refresh_ui()
 
 
+func _on_show_hands_updated() -> void:
+	_update_crib_reminder()
+	_update_action_scoring_ui()
+
+
+func _on_crib_discards_updated() -> void:
+	_update_crib_reminder()
+
+
+func _on_round_context_updated(_dealer_peer_id: int, _crib_owner_peer_id: int) -> void:
+	_update_crib_reminder()
+
+
 func _on_player_connected(peer_id: int) -> void:
 	if NetworkManager.is_offline_debug():
 		return
@@ -430,6 +546,8 @@ func _on_save_debug_pressed() -> void:
 func _on_load_debug_pressed() -> void:
 	_clear_action_selection()
 	if GameState.load_debug_snapshot():
+		_apply_hud_content_width()
+		_apply_layout()
 		_refresh_ui()
 	else:
 		status_label.text = "Failed to load debug save from %s" % GameState.DEBUG_SAVE_PATH
@@ -440,10 +558,9 @@ func _on_pegging_state_updated(_sequence: Array, total: int, turn_peer: int) -> 
 
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:
-	var in_shop := GameState.current_phase == GameState.Phase.SHOP
 	var in_actions := GameState.current_phase == GameState.Phase.SPEND_ACTIONS
-	end_shop_button.visible = in_shop
-	shop_buttons.visible = in_shop
+	end_shop_button.visible = false
+	shop_buttons.visible = false
 	end_actions_button.visible = in_actions and GameState.is_action_turn_for_control()
 	action_panel.visible = in_actions and GameState.is_action_turn_for_control()
 	start_round_button.visible = NetworkManager.is_server() and GameState.current_phase in [
@@ -457,6 +574,9 @@ func _on_phase_changed(_phase: GameState.Phase) -> void:
 	_update_action_phase_ui()
 	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	_update_action_help()
+	_update_crib_reminder()
+	_update_action_scoring_ui()
+	_apply_layout()
 	_refresh_ui()
 
 
@@ -466,6 +586,7 @@ func _update_action_phase_ui() -> void:
 	action_panel.visible = in_actions and GameState.is_action_turn_for_control()
 	if in_actions:
 		end_actions_button.text = "End My Actions"
+	_update_shop_action_panel()
 
 
 func _on_influence_updated(_influence: Dictionary) -> void:
@@ -476,8 +597,15 @@ func _on_coins_updated(_coins: Dictionary) -> void:
 	_refresh_ui()
 
 
+func _on_cut_card_updated_for_scoring(_card: Dictionary) -> void:
+	_update_action_scoring_ui()
+	if action_scoring_panel.visible:
+		action_scoring_label.text = _format_action_scoring_breakdown(GameState.get_control_peer_id())
+
+
 func _on_action_points_updated(_action_points: Dictionary) -> void:
 	_refresh_ui()
+	_update_action_scoring_ui()
 
 
 func _on_faction_actions_updated(_actions: Dictionary) -> void:
@@ -533,6 +661,17 @@ func _on_board_hex_clicked(hex_index: int) -> void:
 	if not GameState.is_action_turn_for_control():
 		action_help_label.text = "Wait for the other player's action turn."
 		return
+
+	if GameState.has_pending_shop_action(GameState.get_control_peer_id()):
+		var effect := GameState.get_pending_shop_effect()
+		match effect:
+			Shop.EFFECT_JACK:
+				_try_shop_jack_push(hex_index)
+				return
+			Shop.EFFECT_KING:
+				_try_shop_king_deploy(hex_index)
+				return
+
 	if not _action_selection_ready():
 		action_help_label.text = "Choose an action first."
 		return
@@ -563,11 +702,14 @@ func _select_action(action_type: int) -> void:
 func _clear_action_selection() -> void:
 	_selected_action_type = -1
 	_selected_source_hex = -1
+	_shop_jack_source_hex = -1
 	_update_action_button_styles()
 	_update_cube_count_visibility()
 	board.clear_action_selection()
 	board.clear_crib_selection()
 	_update_action_help()
+	_update_shop_action_panel()
+	_update_shop_dominance_highlights()
 
 
 func _action_selection_ready() -> bool:
@@ -734,6 +876,182 @@ func _update_action_highlights() -> void:
 	board.set_action_selection(_selected_source_hex, targets)
 
 
+func _update_shop_dominance_highlights() -> void:
+	if GameState.current_phase != GameState.Phase.SPEND_ACTIONS:
+		board.clear_shop_dominance_highlights()
+		return
+	if not GameState.is_action_turn_for_control():
+		board.clear_shop_dominance_highlights()
+		return
+
+	var pending := GameState.get_pending_shop_action()
+	if pending.is_empty():
+		board.clear_shop_dominance_highlights()
+		return
+
+	var effect := str(pending.get("effect", Shop.EFFECT_QUEEN))
+	match effect:
+		Shop.EFFECT_QUEEN:
+			var faction_id := int(pending.get("faction_id", -1))
+			if faction_id == Factions.Id.SPADES:
+				board.clear_shop_dominance_highlights()
+			else:
+				board.set_shop_dominance_highlights(
+					GameState.get_faction_dominance_hexes(faction_id),
+					faction_id
+				)
+		Shop.EFFECT_JACK:
+			if GameState.pending_shop_needs_faction_choice():
+				board.clear_shop_dominance_highlights()
+				return
+			if _shop_jack_source_hex >= 0:
+				board.clear_shop_dominance_highlights()
+				return
+			var jack_faction := GameState.get_pending_shop_deploy_faction()
+			if jack_faction < 0:
+				board.clear_shop_dominance_highlights()
+			else:
+				board.set_shop_dominance_highlights(
+					GameState.get_hexes_with_faction_cubes(jack_faction),
+					jack_faction
+				)
+		Shop.EFFECT_KING:
+			board.clear_shop_dominance_highlights()
+		_:
+			board.clear_shop_dominance_highlights()
+
+
+func _update_shop_action_panel() -> void:
+	var in_actions := GameState.current_phase == GameState.Phase.SPEND_ACTIONS
+	var on_turn := GameState.is_action_turn_for_control()
+	if not in_actions or not on_turn:
+		faction_buttons.visible = false
+		return
+
+	action_help_label.visible = true
+	var pending := GameState.get_pending_shop_action()
+	var effect := GameState.get_pending_shop_effect() if not pending.is_empty() else ""
+	var shop_special := effect in [Shop.EFFECT_JACK, Shop.EFFECT_KING]
+
+	action_buttons.visible = not shop_special
+	clear_action_button.visible = not shop_special
+	cube_count_row.visible = (
+		not shop_special
+		and _selected_action_type in [ActionSystem.Type.PUSH, ActionSystem.Type.PULL]
+	)
+	faction_buttons.visible = shop_special and GameState.pending_shop_needs_faction_choice()
+	_update_shop_faction_button_states()
+	_on_action_history_changed(GameState.can_undo_action())
+
+
+func _update_shop_faction_button_states() -> void:
+	if not faction_buttons.visible:
+		return
+
+	var effect := GameState.get_pending_shop_effect()
+	var faction_buttons_map := {
+		Factions.Id.CLUBS: clubs_faction_button,
+		Factions.Id.HEARTS: hearts_faction_button,
+		Factions.Id.DIAMONDS: diamonds_faction_button,
+	}
+	for faction_id in Factions.ALL:
+		var button: Button = faction_buttons_map.get(faction_id)
+		if button == null:
+			continue
+		var enabled := true
+		if effect == Shop.EFFECT_JACK:
+			enabled = GameState.faction_has_cubes_on_board(faction_id)
+		button.disabled = not enabled
+
+
+func _on_shop_faction_picked(faction_id: int) -> void:
+	if not GameState.is_action_turn_for_control():
+		return
+	if not GameState.pending_shop_needs_faction_choice():
+		return
+	GameState.submit_shop_deploy_faction(faction_id)
+
+
+func _try_shop_jack_push(hex_index: int) -> void:
+	if GameState.pending_shop_needs_faction_choice():
+		action_help_label.text = "Choose a faction first."
+		return
+
+	var faction_id := GameState.get_pending_shop_deploy_faction()
+	if faction_id < 0:
+		return
+
+	if _shop_jack_source_hex < 0:
+		if GameState.get_faction_cubes_on_hex(hex_index, faction_id) <= 0:
+			action_help_label.text = "That hex has no %s cubes." % Factions.name_for(faction_id)
+			return
+		_shop_jack_source_hex = hex_index
+		action_help_label.text = "Jack: click an adjacent hex to push into."
+		_update_shop_jack_target_highlights()
+		return
+
+	if hex_index == _shop_jack_source_hex:
+		return
+	if hex_index not in GameState.get_adjacent_hexes(_shop_jack_source_hex):
+		action_help_label.text = "Push target must be adjacent."
+		return
+	if GameState.get_faction_cubes_on_hex(_shop_jack_source_hex, faction_id) <= 0:
+		action_help_label.text = "No %s cubes left on that hex." % Factions.name_for(faction_id)
+		return
+
+	var space := HexBoard.MAX_CUBES_PER_FACTION_PER_HEX - GameState.get_faction_cubes_on_hex(
+		hex_index,
+		faction_id
+	)
+	if space <= 0:
+		action_help_label.text = "That hex has no room for another %s cube." % Factions.name_for(
+			faction_id
+		)
+		return
+
+	GameState.submit_shop_jack_push(_shop_jack_source_hex, hex_index)
+	action_help_label.text = "Pushed 1 %s cube." % Factions.name_for(faction_id)
+	_shop_jack_source_hex = -1
+	board.clear_action_selection()
+	_update_shop_dominance_highlights()
+
+
+func _update_shop_jack_target_highlights() -> void:
+	if _shop_jack_source_hex < 0:
+		board.clear_action_selection()
+		return
+
+	var faction_id := GameState.get_pending_shop_deploy_faction()
+	var targets: Array = []
+	for adjacent_hex in GameState.get_adjacent_hexes(_shop_jack_source_hex):
+		var adjacent_index := int(adjacent_hex)
+		if GameState.get_faction_cubes_on_hex(adjacent_index, faction_id) < HexBoard.MAX_CUBES_PER_FACTION_PER_HEX:
+			targets.append(adjacent_index)
+
+	board.set_action_selection(_shop_jack_source_hex, targets)
+	_update_shop_dominance_highlights()
+
+
+func _try_shop_king_deploy(hex_index: int) -> void:
+	if GameState.pending_shop_needs_faction_choice():
+		action_help_label.text = "Choose a faction first."
+		return
+
+	var faction_id := GameState.get_pending_shop_deploy_faction()
+	if faction_id < 0:
+		return
+
+	if hex_index not in GameState.get_hexes_with_deploy_space(faction_id):
+		action_help_label.text = "That hex has no room for another %s cube." % Factions.name_for(
+			faction_id
+		)
+		return
+
+	GameState.submit_shop_king_deploy(hex_index)
+	action_help_label.text = "Deployed 1 %s cube." % Factions.name_for(faction_id)
+	_update_shop_dominance_highlights()
+
+
 func _update_action_button_styles() -> void:
 	_style_toggle_button(push_button, _selected_action_type == ActionSystem.Type.PUSH)
 	_style_toggle_button(pull_button, _selected_action_type == ActionSystem.Type.PULL)
@@ -785,9 +1103,9 @@ func _refresh_ui() -> void:
 	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	influence_display.refresh()
 	coins_label.text = _format_coins()
-	crib_discards_label.text = _format_crib_discards()
+	_update_crib_reminder()
+	_update_action_scoring_ui()
 	action_points_label.text = _format_action_points()
-	faction_actions_label.text = _format_faction_actions()
 	_update_actions_left_big_display()
 	board.queue_redraw()
 
@@ -804,10 +1122,9 @@ func _format_coins() -> String:
 	return "\n".join(lines)
 
 
-func _format_crib_discards() -> String:
-	var peer_id := GameState.get_control_peer_id()
-	var cards: Array = GameState.get_crib_discards_for_peer(peer_id)
+func _update_crib_reminder() -> void:
 	var show_phase := GameState.current_phase in [
+		GameState.Phase.DISCARD_TO_CRIB,
 		GameState.Phase.CUT_CARD,
 		GameState.Phase.PEGGING,
 		GameState.Phase.SHOW_HANDS,
@@ -815,15 +1132,62 @@ func _format_crib_discards() -> String:
 		GameState.Phase.SPEND_ACTIONS,
 		GameState.Phase.RESOLVE_CRIB,
 	]
-	crib_discards_label.visible = show_phase and not cards.is_empty()
-	if not crib_discards_label.visible:
-		return ""
+	var crib_owner := GameState.get_crib_owner_peer_id()
+	var has_crib_owner := crib_owner != 0
+	crib_reminder_panel.visible = show_phase and has_crib_owner
+	if not crib_reminder_panel.visible:
+		return
 
-	var suit_names: PackedStringArray = []
-	for card in cards:
-		var faction_id := int(card.get("faction", Factions.from_suit(str(card.get("suit", "clubs")))))
-		suit_names.append(Factions.name_for(faction_id))
-	return "Your crib discards: %s" % ", ".join(suit_names)
+	var owner_name: String = GameState.player_names.get(crib_owner, "Player %d" % crib_owner)
+	var control_peer := GameState.get_control_peer_id()
+	if crib_owner == control_peer:
+		crib_owner_label.text = "Crib belongs to you."
+	else:
+		crib_owner_label.text = "Crib belongs to %s." % owner_name
+
+	var cards: Array = GameState.get_crib_discards_for_peer(control_peer)
+	if cards.is_empty():
+		crib_discards_row.visible = false
+	else:
+		crib_discards_row.visible = true
+		var faction_ids: Array = []
+		for card in cards:
+			faction_ids.append(Factions.from_suit(str(card.get("suit", "clubs"))))
+		crib_discard_cubes.set_factions(faction_ids)
+
+
+func _update_action_scoring_ui() -> void:
+	var show_phase := GameState.current_phase in [
+		GameState.Phase.SHOW_HANDS,
+		GameState.Phase.SHOP,
+		GameState.Phase.SPEND_ACTIONS,
+		GameState.Phase.RESOLVE_CRIB,
+	]
+	var peer_id := GameState.get_control_peer_id()
+	var has_show_hand := not GameState.get_show_hand_for_peer(peer_id).is_empty()
+	show_action_scoring_button.visible = show_phase and has_show_hand
+	if not show_action_scoring_button.visible:
+		action_scoring_panel.visible = false
+		show_action_scoring_button.text = "Show action scoring"
+	elif action_scoring_panel.visible:
+		action_scoring_label.text = _format_action_scoring_breakdown(peer_id)
+
+
+func _format_action_scoring_breakdown(peer_id: int) -> String:
+	var hand: Array = GameState.get_show_hand_for_peer(peer_id)
+	if hand.is_empty():
+		return "No show-hand cards recorded yet."
+	var breakdown := CribbageScoring.explain_actions_from_cards(hand, GameState.cut_card)
+	return CribbageScoring.format_action_breakdown(breakdown)
+
+
+func _on_show_action_scoring_pressed() -> void:
+	action_scoring_panel.visible = not action_scoring_panel.visible
+	show_action_scoring_button.text = (
+		"Hide action scoring" if action_scoring_panel.visible else "Show action scoring"
+	)
+	if action_scoring_panel.visible:
+		action_scoring_label.text = _format_action_scoring_breakdown(GameState.get_control_peer_id())
 
 
 func _format_action_points() -> String:
@@ -834,24 +1198,6 @@ func _format_action_points() -> String:
 	for peer_id in GameState.action_points.keys():
 		var player_name: String = GameState.player_names.get(peer_id, "Player %d" % peer_id)
 		lines.append("%s: %d" % [player_name, GameState.action_points[peer_id]])
-
-	return "\n".join(lines)
-
-
-func _format_faction_actions() -> String:
-	if GameState.player_faction_actions.is_empty():
-		return "Faction shop actions: none yet"
-
-	var lines: PackedStringArray = [
-		"Faction shop actions (%d coins each):" % Shop.FACTION_ACTION_COST,
-	]
-	for peer_id in GameState.player_faction_actions.keys():
-		var player_name: String = GameState.player_names.get(peer_id, "Player %d" % peer_id)
-		var tokens: Dictionary = GameState.player_faction_actions[peer_id]
-		var parts: PackedStringArray = []
-		for faction in Factions.ALL:
-			parts.append("%s %d" % [Factions.name_for(faction), RemixRules.faction_dict_value(tokens, faction)])
-		lines.append("%s: %s" % [player_name, ", ".join(parts)])
 
 	return "\n".join(lines)
 

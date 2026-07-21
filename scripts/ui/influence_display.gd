@@ -209,5 +209,4 @@ class InfluenceRowDots extends Control:
 		var columns := maxi(1, mini(_columns, dot_colors.size()))
 		for dot_index in range(dot_colors.size()):
 			var pos := _dot_local_position(dot_index)
-			draw_circle(pos, DOT_RADIUS, dot_colors[dot_index])
-			draw_arc(pos, DOT_RADIUS, 0.0, TAU, 16, Color(0.0, 0.0, 0.0, 0.35), 1.0)
+			Factions.draw_cube(self, pos, DOT_RADIUS, dot_colors[dot_index], Color(1.0, 1.0, 1.0, 0.35))

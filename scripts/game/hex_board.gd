@@ -433,6 +433,25 @@ func push(
 	return moved
 
 
+func push_cube_ignoring_dominance(faction: int, from_hex: int, to_hex: int) -> bool:
+	if not are_adjacent(from_hex, to_hex):
+		return false
+	if cube_count_for(faction, from_hex) <= 0:
+		return false
+	if available_cube_space(faction, to_hex) <= 0:
+		return false
+	_remove_cubes(faction, from_hex, 1)
+	_add_cubes(faction, to_hex, 1)
+	return true
+
+
+func deploy_cube(faction: int, hex_index: int) -> bool:
+	if not can_add_cubes(faction, hex_index, 1):
+		return false
+	_add_cubes(faction, hex_index, 1)
+	return true
+
+
 func pull(
 	faction: int,
 	to_hex: int,

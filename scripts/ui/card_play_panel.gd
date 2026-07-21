@@ -66,6 +66,7 @@ func _ready() -> void:
 	GameState.active_control_changed.connect(_on_active_control_changed)
 	GameState.action_turn_updated.connect(_on_action_turn_updated)
 	GameState.crib_resolution_updated.connect(_on_crib_resolution_updated)
+	GameState.show_hands_updated.connect(_on_show_hands_updated)
 
 	_on_phase_changed(GameState.current_phase)
 	_refresh_hand_display()
@@ -217,6 +218,11 @@ func _on_action_turn_updated(_peer_id: int) -> void:
 		_refresh_action_hand_display()
 
 
+func _on_show_hands_updated() -> void:
+	if GameState.current_phase == GameState.Phase.SPEND_ACTIONS:
+		_refresh_action_hand_display()
+
+
 func _on_crib_resolution_updated(crib_cards: Array, resolved: Dictionary, _resolver_peer: int) -> void:
 	_crib_cards = crib_cards.duplicate(true)
 	_crib_choices = resolved.duplicate(true)
@@ -312,9 +318,13 @@ func _on_phase_changed(phase: GameState.Phase) -> void:
 		GameState.Phase.SHOW_HANDS:
 			message_label.text = "Scoring hands for actions..."
 		GameState.Phase.SHOP:
-			message_label.text = "Shop: buy faction tokens with coins, then click End Shop Phase."
+			message_label.text = "Spend actions — buy face cards from the shop on your turn."
 		GameState.Phase.SPEND_ACTIONS:
 			_refresh_action_hand_display()
+			if GameState.is_action_turn_for_control():
+				message_label.text = "Your action turn — use the map or buy from the shop above."
+			else:
+				message_label.text = "Waiting for another player to take actions."
 		GameState.Phase.RESOLVE_CRIB:
 			message_label.text = "Resolve the crib (dealer only)."
 			_update_crib_help()

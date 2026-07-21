@@ -46,7 +46,19 @@ static func empty_supply() -> Dictionary:
 
 
 static func empty_faction_actions() -> Dictionary:
-	return empty_influence()
+	return {
+		Factions.Id.CLUBS: 0,
+		Factions.Id.HEARTS: 0,
+		Factions.Id.DIAMONDS: 0,
+		Factions.Id.SPADES: 0,
+	}
+
+
+static func normalize_action_tokens(values: Dictionary) -> Dictionary:
+	var out := {}
+	for faction in Factions.SHOP_FACTIONS:
+		out[faction] = faction_dict_value(values, faction)
+	return out
 
 
 static func faction_dict_value(values: Dictionary, faction_id: int) -> int:
