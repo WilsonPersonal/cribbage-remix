@@ -12,20 +12,13 @@ static func from_game(peer_id: int) -> AiContext:
 	var context := AiContext.new()
 	context.peer_id = peer_id
 	context.opponent_id = _opponent_for(peer_id)
-	context.primary_faction = _highest_influence_faction(peer_id)
+	context.primary_faction = highest_influence_faction_for(peer_id)
 	context.scoring_faction = _highest_score_faction()
 	context.phase = GameState.current_phase
 	return context
 
 
-static func _opponent_for(peer_id: int) -> int:
-	for candidate in GameState.active_player_order:
-		if int(candidate) != int(peer_id):
-			return int(candidate)
-	return 0
-
-
-static func _highest_influence_faction(peer_id: int) -> int:
+static func highest_influence_faction_for(peer_id: int) -> int:
 	var influence: Dictionary = GameState.player_influence.get(
 		peer_id,
 		RemixRules.empty_influence()
@@ -38,6 +31,21 @@ static func _highest_influence_faction(peer_id: int) -> int:
 			best_value = value
 			best_faction = faction_id
 	return best_faction
+
+
+static func influence_for(peer_id: int, faction_id: int) -> int:
+	var influence: Dictionary = GameState.player_influence.get(
+		peer_id,
+		RemixRules.empty_influence()
+	)
+	return int(RemixRules.faction_dict_value(influence, faction_id))
+
+
+static func _opponent_for(peer_id: int) -> int:
+	for candidate in GameState.active_player_order:
+		if int(candidate) != int(peer_id):
+			return int(candidate)
+	return 0
 
 
 static func _highest_score_faction() -> int:

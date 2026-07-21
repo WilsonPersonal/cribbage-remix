@@ -43,6 +43,7 @@ const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 @onready var undo_action_button: Button = $HUD/Margin/VBox/ActionPanel/UndoActionButton
 @onready var clear_action_button: Button = $HUD/Margin/VBox/ActionPanel/ClearActionButton
 @onready var board: Control = $Board
+@onready var ai_thinking_overlay: PanelContainer = $HUD/Margin/VBox/AiThinkingOverlay
 @onready var card_panel = $CardPlayPanel
 @onready var offline_bar: VBoxContainer = $HUD/Margin/VBox/OfflineBar
 @onready var control_peer_label: Label = $HUD/Margin/VBox/OfflineBar/ControlPeerLabel
@@ -101,6 +102,8 @@ func _ready() -> void:
 	load_debug_button.pressed.connect(_on_load_debug_pressed)
 	show_action_scoring_button.pressed.connect(_on_show_action_scoring_pressed)
 	board.hex_clicked.connect(_on_board_hex_clicked)
+	AiController.thinking_started.connect(_on_ai_thinking_started)
+	AiController.thinking_finished.connect(_on_ai_thinking_finished)
 
 	push_button.pressed.connect(_on_push_pressed)
 	pull_button.pressed.connect(_on_pull_pressed)
@@ -523,6 +526,18 @@ func _on_crib_hex_highlights_changed(target_hexes: Array) -> void:
 
 func _on_game_message(message: String) -> void:
 	status_label.text = message
+
+
+func _on_ai_thinking_started(peer_id: int) -> void:
+	if not AiController.is_ai_peer(peer_id):
+		return
+	ai_thinking_overlay.show_for_peer(peer_id)
+
+
+func _on_ai_thinking_finished(_peer_id: int) -> void:
+	ai_thinking_overlay.hide_thinking()
+	_update_actions_left_big_display()
+	action_points_label.text = _format_action_points()
 
 
 func _on_active_control_changed(_peer_id: int) -> void:

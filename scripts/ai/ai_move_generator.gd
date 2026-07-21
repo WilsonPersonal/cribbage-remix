@@ -35,22 +35,43 @@ static func _generate_discard_moves(peer_id: int) -> Array:
 	if hand.size() < expected:
 		return []
 
-	var indices: Array = []
-	for card_index in range(hand.size()):
-		indices.append(card_index)
-	indices.sort_custom(func(a: int, b: int) -> bool:
-		var card_a: Dictionary = hand[a]
-		var card_b: Dictionary = hand[b]
-		if int(card_a.get("value", 0)) == int(card_b.get("value", 0)):
-			return int(card_a.get("faction", 0)) > int(card_b.get("faction", 0))
-		return int(card_a.get("value", 0)) > int(card_b.get("value", 0))
-	)
+	var combos: Array = _enumerate_index_combinations(hand.size(), expected, 24)
+	var moves: Array = []
+	for indices in combos:
+		moves.append({
+			"kind": KIND_DISCARD,
+			"peer_id": peer_id,
+			"card_indices": indices,
+		})
+	return moves
 
-	return [{
-		"kind": KIND_DISCARD,
-		"peer_id": peer_id,
-		"card_indices": indices.slice(0, expected),
-	}]
+
+static func _enumerate_index_combinations(size: int, choose: int, max_count: int) -> Array:
+	var results: Array = []
+	_collect_index_combinations(0, size, choose, [], results, max_count)
+	return results
+
+
+static func _collect_index_combinations(
+	start: int,
+	size: int,
+	remaining: int,
+	current: Array,
+	results: Array,
+	max_count: int
+) -> void:
+	if results.size() >= max_count:
+		return
+	if remaining == 0:
+		results.append(current.duplicate())
+		return
+	if start >= size:
+		return
+
+	_collect_index_combinations(start + 1, size, remaining, current, results, max_count)
+	current.append(start)
+	_collect_index_combinations(start + 1, size, remaining - 1, current, results, max_count)
+	current.pop_back()
 
 
 static func _generate_pegging_moves(peer_id: int) -> Array:

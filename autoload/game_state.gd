@@ -54,6 +54,7 @@ var pending_vs_ai: bool = false
 var active_control_peer_id: int = 1
 var pending_local_player_name: String = ""
 var _acting_peer_override: int = -1
+var _ai_search_silence: int = 0
 
 var current_phase: Phase = Phase.WAITING
 var round_number: int = 0
@@ -156,6 +157,18 @@ func run_as_peer(peer_id: int, callback: Callable) -> void:
 	_acting_peer_override = peer_id
 	callback.call()
 	_acting_peer_override = previous_override
+
+
+func push_ai_search_silence() -> void:
+	_ai_search_silence += 1
+
+
+func pop_ai_search_silence() -> void:
+	_ai_search_silence = maxi(0, _ai_search_silence - 1)
+
+
+func is_ai_search_silence() -> bool:
+	return _ai_search_silence > 0
 
 
 func set_pending_local_player_name(player_name: String) -> void:
@@ -1040,6 +1053,8 @@ func grant_pegging_coins(peer_id: int, event_type: String) -> void:
 		return
 
 	player_coins[peer_id] = player_coins.get(peer_id, 0) + gained
+	if is_ai_search_silence():
+		return
 	_broadcast_coins()
 	_broadcast_pegging_score(peer_id, event_type, gained)
 
@@ -1050,6 +1065,8 @@ func _broadcast_pegging_score(peer_id: int, event_type: String, points: int) -> 
 
 
 func _apply_pegging_score(peer_id: int, event_type: String, points: int) -> void:
+	if is_ai_search_silence():
+		return
 	pegging_score_scored.emit(peer_id, event_type, points)
 
 
@@ -1398,6 +1415,8 @@ func _sync_undo_availability(can_undo: bool) -> void:
 
 
 func _emit_undo_availability() -> void:
+	if is_ai_search_silence():
+		return
 	var can_undo := can_undo_action()
 	action_history_changed.emit(can_undo)
 	if multiplayer.is_server():
@@ -1561,6 +1580,8 @@ func _mini_crib_resolver_for_index(index: int) -> int:
 
 
 func _advance_mini_crib() -> void:
+	if is_ai_search_silence():
+		return
 	mini_crib_index += 1
 	if mini_crib_index >= MINI_CRIB_COUNT:
 		_finish_mini_crib_setup()
@@ -1586,6 +1607,8 @@ func _broadcast_crib_resolution_state(
 	resolved: Dictionary,
 	resolver_peer: int
 ) -> void:
+	if is_ai_search_silence():
+		return
 	crib_resolver_peer_id = resolver_peer
 	if current_phase == Phase.SETUP_MINI_CRIB:
 		mini_crib_resolving_peer = resolver_peer
@@ -1861,7 +1884,7 @@ func export_debug_snapshot() -> Dictionary:
 	}
 
 
-func import_debug_snapshot(data: Dictionary) -> bool:
+func import_debug_snapshot(data: Dictionary, apply_views: bool = true) -> bool:
 	if int(data.get("version", 0)) != DEBUG_SAVE_VERSION:
 		return false
 
@@ -1911,7 +1934,8 @@ func import_debug_snapshot(data: Dictionary) -> bool:
 
 	var board_state := _variant_array(data.get("board_state", []))
 	_board.load_state(board_state)
-	_apply_debug_snapshot_views()
+	if apply_views:
+		_apply_debug_snapshot_views()
 	return true
 
 
@@ -2241,6 +2265,8 @@ func _sorted_peer_ids() -> Array:
 
 
 func _send_local_hand(peer_id: int, hand: Array) -> void:
+	if is_ai_search_silence():
+		return
 	peer_id = int(peer_id)
 	if offline_debug_mode:
 		if peer_id == active_control_peer_id:
@@ -2373,6 +2399,8 @@ func _broadcast_shop_state() -> void:
 
 
 func _broadcast_pending_shop_action() -> void:
+	if is_ai_search_silence():
+		return
 	shop_action_pending_updated.emit(_pending_shop_action.duplicate(true))
 	_sync_pending_shop_action.rpc(_pending_shop_action.duplicate(true))
 
@@ -2413,11 +2441,15 @@ func _has_queen_shop_bypass(peer_id: int, faction_id: int) -> bool:
 
 
 func _broadcast_faction_actions() -> void:
+	if is_ai_search_silence():
+		return
 	faction_actions_updated.emit(player_faction_actions)
 	_sync_faction_actions.rpc(player_faction_actions)
 
 
 func _broadcast_pegging_state(display_total: int = -1) -> void:
+	if is_ai_search_silence():
+		return
 	var total := pegging_total if display_total < 0 else display_total
 	_apply_pegging_state(pegging_sequence, total, pegging_turn_peer)
 	_sync_pegging_state.rpc(pegging_sequence, total, pegging_turn_peer)
@@ -2672,6 +2704,9 @@ func _apply_faction_scores(scored: Dictionary) -> void:
 
 	var new_ranks := get_faction_rank_map()
 
+	if is_ai_search_silence():
+		return
+
 	for event in scoring_events:
 		var faction_id: int = event.get("faction_id", -1)
 		var points: int = int(event.get("points", 0))
@@ -2716,6 +2751,8 @@ func _apply_faction_scores_state(scores: Dictionary, recency: Dictionary) -> voi
 
 
 func _finish_round() -> void:
+	if is_ai_search_silence():
+		return
 	_mini_cribs_completed_for_round = false
 	_clear_pending_shop_action()
 	_compact_shop_after_round()
@@ -2741,16 +2778,21 @@ func _spend_action_points(peer_id: int, cost: int) -> bool:
 
 	action_points[peer_id] = current - cost
 	_apply_action_points(action_points)
-	_sync_action_points.rpc(action_points)
+	if not is_ai_search_silence():
+		_sync_action_points.rpc(action_points)
 	return true
 
 
 func _apply_action_points(points: Dictionary) -> void:
 	action_points = points.duplicate(true)
+	if is_ai_search_silence():
+		return
 	action_points_updated.emit(action_points)
 
 
 func _broadcast_board() -> void:
+	if is_ai_search_silence():
+		return
 	var board_state := _board.duplicate_state()
 	var faction_power := _board.get_faction_power()
 	_apply_board(board_state, faction_power)
@@ -2779,11 +2821,15 @@ func _apply_board(board_state: Array, faction_power: Dictionary) -> void:
 
 func _set_phase(phase: Phase) -> void:
 	_apply_phase(phase)
+	if is_ai_search_silence():
+		return
 	_sync_phase.rpc(phase)
 
 
 func _apply_phase(phase: Phase) -> void:
 	current_phase = phase
+	if is_ai_search_silence():
+		return
 	phase_changed.emit(phase)
 	_update_offline_active_player()
 
@@ -2797,6 +2843,8 @@ func _sync_player_names(names: Dictionary) -> void:
 
 
 func _broadcast_influence() -> void:
+	if is_ai_search_silence():
+		return
 	_apply_influence(player_influence)
 	_sync_influence.rpc(player_influence)
 
@@ -2823,6 +2871,8 @@ func _sync_supply(supply: Dictionary) -> void:
 
 
 func _broadcast_coins() -> void:
+	if is_ai_search_silence():
+		return
 	coins_updated.emit(player_coins)
 	_sync_coins.rpc(player_coins)
 
@@ -2963,6 +3013,8 @@ func _notify_crib_cube_anim(
 	card_index: int,
 	peer_id: int
 ) -> void:
+	if is_ai_search_silence():
+		return
 	crib_cube_anim_requested.emit(accept, hex_index, faction_id, card_index, peer_id)
 	_sync_crib_cube_anim.rpc(accept, hex_index, faction_id, card_index, peer_id)
 
@@ -2973,6 +3025,8 @@ func _notify_action_cube_anim(
 	to_hex: int,
 	move_count: int
 ) -> void:
+	if is_ai_search_silence():
+		return
 	action_cube_anim_requested.emit(faction_id, from_hex, to_hex, move_count)
 	_sync_action_cube_anim.rpc(faction_id, from_hex, to_hex, move_count)
 
@@ -2983,6 +3037,8 @@ func _notify_action_cart_anim(
 	to_hex: int,
 	origin_hex: int
 ) -> void:
+	if is_ai_search_silence():
+		return
 	action_cart_anim_requested.emit(faction_id, from_hex, to_hex, origin_hex)
 	_sync_action_cart_anim.rpc(faction_id, from_hex, to_hex, origin_hex)
 

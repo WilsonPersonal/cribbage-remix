@@ -1,10 +1,12 @@
-[gd_scene load_steps=6 format=3 uid="uid://c0486osgjfvr7"]
+[gd_scene load_steps=8 format=3 uid="uid://c0486osgjfvr7"]
 
 [ext_resource type="Script" uid="uid://d0dflhdrjj0iw" path="res://scripts/ui/game.gd" id="1_game"]
 [ext_resource type="Script" uid="uid://mvvynadvyebw" path="res://scripts/ui/hex_board_view.gd" id="2_board"]
 [ext_resource type="PackedScene" uid="uid://b34fql2wvv4u7" path="res://scenes/card_play_panel.tscn" id="3_cards"]
 [ext_resource type="Script" path="res://scripts/ui/influence_display.gd" id="4_influence"]
 [ext_resource type="Script" path="res://scripts/ui/shop_panel.gd" id="6_shop"]
+[ext_resource type="Script" path="res://scripts/ui/ai_thinking_overlay.gd" id="7_ai_thinking_overlay"]
+[ext_resource type="Script" path="res://scripts/ui/ai_thinking_spinner.gd" id="8_ai_thinking_spinner"]
 
 [node name="Game" type="Control"]
 layout_mode = 3
@@ -101,6 +103,35 @@ autowrap_mode = 3
 [node name="PhaseLabel" type="Label" parent="HUD/Margin/VBox"]
 layout_mode = 2
 text = "Phase: Waiting"
+
+[node name="AiThinkingOverlay" type="PanelContainer" parent="HUD/Margin/VBox"]
+visible = false
+layout_mode = 2
+size_flags_horizontal = 3
+script = ExtResource("7_ai_thinking_overlay")
+
+[node name="Margin" type="MarginContainer" parent="HUD/Margin/VBox/AiThinkingOverlay"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="HBox" type="HBoxContainer" parent="HUD/Margin/VBox/AiThinkingOverlay/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+alignment = 1
+
+[node name="Spinner" type="Control" parent="HUD/Margin/VBox/AiThinkingOverlay/Margin/HBox"]
+custom_minimum_size = Vector2(36, 36)
+layout_mode = 2
+script = ExtResource("8_ai_thinking_spinner")
+
+[node name="Label" type="Label" parent="HUD/Margin/VBox/AiThinkingOverlay/Margin/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "AI is thinking..."
+autowrap_mode = 3
 
 [node name="PeggingCountLabel" type="Label" parent="HUD/Margin/VBox"]
 layout_mode = 2
