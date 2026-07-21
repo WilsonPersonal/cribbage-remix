@@ -3,6 +3,7 @@ extends PanelContainer
 const CardWidgetScene := preload("res://scenes/card_widget.tscn")
 
 @onready var slots_row: HBoxContainer = $Margin/VBox/SlotsRow
+@onready var coins_label: Label = $Margin/VBox/CoinsLabel
 
 var _slot_buttons: Array = []
 var _slot_cost_labels: Array = []
@@ -17,7 +18,7 @@ func _ready() -> void:
 	GameState.coins_updated.connect(_on_coins_updated)
 	GameState.board_updated.connect(_on_board_updated)
 	GameState.active_control_changed.connect(_on_active_control_changed)
-	_on_phase_changed(GameState.current_phase)
+	GameState.lobby_updated.connect(_on_lobby_updated)
 	_refresh()
 
 
@@ -56,7 +57,6 @@ func _on_shop_updated(_slots: Array) -> void:
 
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:
-	visible = GameState.current_phase == GameState.Phase.SPEND_ACTIONS
 	_refresh()
 
 
@@ -80,6 +80,10 @@ func _on_active_control_changed(_peer_id: int) -> void:
 	_refresh()
 
 
+func _on_lobby_updated() -> void:
+	_refresh()
+
+
 func _on_slot_pressed(slot_index: int) -> void:
 	if GameState.current_phase != GameState.Phase.SPEND_ACTIONS:
 		return
@@ -91,12 +95,12 @@ func _on_slot_pressed(slot_index: int) -> void:
 
 
 func _refresh() -> void:
-	if not visible:
-		return
+	coins_label.text = _format_coins_line()
 
 	var slots: Array = GameState.get_shop_slots()
 	var coins := int(GameState.player_coins.get(GameState.get_control_peer_id(), 0))
-	var can_buy := GameState.is_action_turn_for_control()
+	var can_buy := GameState.current_phase == GameState.Phase.SPEND_ACTIONS
+	can_buy = can_buy and GameState.is_action_turn_for_control()
 	can_buy = can_buy and not GameState.has_pending_shop_action(GameState.get_control_peer_id())
 
 	for slot_index in range(Shop.SLOT_COUNT):
@@ -125,3 +129,19 @@ func _refresh() -> void:
 		card_button.disabled = not affordable
 		card_button.modulate = card_color if affordable else Color(0.65, 0.65, 0.65, 1.0)
 		cost_label.modulate = Color.WHITE if affordable else Color(0.65, 0.65, 0.65, 1.0)
+
+
+func _format_coins_line() -> String:
+	if GameState.player_coins.is_empty():
+		return "\u2014"
+
+	var parts: PackedStringArray = []
+	var peer_ids: Array = GameState.player_coins.keys()
+	peer_ids.sort()
+	for peer_id in peer_ids:
+		var player_name: String = GameState.player_names.get(peer_id, "Player %d" % peer_id)
+		parts.append("%s: %d\u00a2" % [player_name, int(GameState.player_coins[peer_id])])
+
+	if parts.is_empty():
+		return "\u2014"
+	return " %s " % "   |    ".join(parts)

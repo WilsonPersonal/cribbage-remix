@@ -1,10 +1,9 @@
-[gd_scene load_steps=7 format=3 uid="uid://c0486osgjfvr7"]
+[gd_scene load_steps=6 format=3 uid="uid://c0486osgjfvr7"]
 
 [ext_resource type="Script" uid="uid://d0dflhdrjj0iw" path="res://scripts/ui/game.gd" id="1_game"]
 [ext_resource type="Script" uid="uid://mvvynadvyebw" path="res://scripts/ui/hex_board_view.gd" id="2_board"]
 [ext_resource type="PackedScene" uid="uid://b34fql2wvv4u7" path="res://scenes/card_play_panel.tscn" id="3_cards"]
 [ext_resource type="Script" path="res://scripts/ui/influence_display.gd" id="4_influence"]
-[ext_resource type="Script" uid="uid://f8k2n4m6qp1w" path="res://scripts/ui/faction_cube_row.gd" id="5_cube_row"]
 [ext_resource type="Script" path="res://scripts/ui/shop_panel.gd" id="6_shop"]
 
 [node name="Game" type="Control"]
@@ -26,7 +25,6 @@ grow_vertical = 2
 color = Color(0.1, 0.12, 0.16, 1)
 
 [node name="ShopPanel" type="PanelContainer" parent="."]
-visible = false
 layout_mode = 1
 script = ExtResource("6_shop")
 
@@ -51,6 +49,11 @@ autowrap_mode = 3
 layout_mode = 2
 theme_override_constants/separation = 10
 alignment = 1
+
+[node name="CoinsLabel" type="Label" parent="ShopPanel/Margin/VBox"]
+layout_mode = 2
+text = "—"
+horizontal_alignment = 1
 
 [node name="Board" type="Control" parent="."]
 layout_mode = 1
@@ -147,35 +150,10 @@ size_flags_horizontal = 3
 text = "Load"
 
 [node name="CoinsLabel" type="Label" parent="HUD/Margin/VBox"]
+visible = false
 layout_mode = 2
 text = "Coins: none yet"
 autowrap_mode = 3
-
-[node name="CribReminderPanel" type="VBoxContainer" parent="HUD/Margin/VBox"]
-layout_mode = 2
-visible = false
-theme_override_constants/separation = 2
-
-[node name="CribReminderTitle" type="Label" parent="HUD/Margin/VBox/CribReminderPanel"]
-layout_mode = 2
-text = "Crib reminder"
-
-[node name="CribOwnerLabel" type="Label" parent="HUD/Margin/VBox/CribReminderPanel"]
-layout_mode = 2
-text = "Crib belongs to —"
-autowrap_mode = 3
-
-[node name="CribDiscardsRow" type="HBoxContainer" parent="HUD/Margin/VBox/CribReminderPanel"]
-layout_mode = 2
-theme_override_constants/separation = 6
-
-[node name="CribDiscardsCaption" type="Label" parent="HUD/Margin/VBox/CribReminderPanel/CribDiscardsRow"]
-layout_mode = 2
-text = "Your discards:"
-
-[node name="CribDiscardCubes" type="Control" parent="HUD/Margin/VBox/CribReminderPanel/CribDiscardsRow"]
-layout_mode = 2
-script = ExtResource("5_cube_row")
 
 [node name="ActionPointsLabel" type="Label" parent="HUD/Margin/VBox"]
 layout_mode = 2

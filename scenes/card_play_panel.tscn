@@ -19,89 +19,136 @@ theme_override_constants/margin_top = 8
 theme_override_constants/margin_right = 12
 theme_override_constants/margin_bottom = 8
 
-[node name="VBox" type="VBoxContainer" parent="Margin"]
+[node name="RootHBox" type="HBoxContainer" parent="Margin"]
 layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="ContentVBox" type="VBoxContainer" parent="Margin/RootHBox"]
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_constants/separation = 6
 
-[node name="MessageLabel" type="Label" parent="Margin/VBox"]
+[node name="MessageLabel" type="Label" parent="Margin/RootHBox/ContentVBox"]
 layout_mode = 2
 text = "Cards will appear here during a round."
 
-[node name="CutCardLabel" type="Label" parent="Margin/VBox"]
+[node name="HeaderBlock" type="VBoxContainer" parent="Margin/RootHBox/ContentVBox"]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="InfoRow" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox/HeaderBlock"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="CutCardLabel" type="Label" parent="Margin/RootHBox/ContentVBox/HeaderBlock/InfoRow"]
 layout_mode = 2
 text = "Cut card: (not cut yet)"
 
-[node name="PeggingLabel" type="Label" parent="Margin/VBox"]
+[node name="InfoRowSpacer" type="Control" parent="Margin/RootHBox/ContentVBox/HeaderBlock/InfoRow"]
 layout_mode = 2
-visible = false
-text = "Pegging"
+size_flags_horizontal = 3
 
-[node name="PeggingCountLabel" type="Label" parent="Margin/VBox"]
-layout_mode = 2
+[node name="CribOwnerLabel" type="Label" parent="Margin/RootHBox/ContentVBox/HeaderBlock/InfoRow"]
 visible = false
-theme_override_font_sizes/font_size = 28
-text = "Count: 0 / 31"
+layout_mode = 2
+text = "Your Crib"
 horizontal_alignment = 1
 
-[node name="PeggingTurnLabel" type="Label" parent="Margin/VBox"]
-layout_mode = 2
-visible = false
-text = "Turn: —"
-horizontal_alignment = 1
-
-[node name="PeggingScoreLayer" type="Control" parent="Margin/VBox"]
-custom_minimum_size = Vector2(0, 40)
-layout_mode = 2
-mouse_filter = 2
-
-[node name="PeggingContainer" type="HBoxContainer" parent="Margin/VBox"]
-layout_mode = 2
-theme_override_constants/separation = 4
-
-[node name="HandContainer" type="HBoxContainer" parent="Margin/VBox"]
-layout_mode = 2
-theme_override_constants/separation = 4
-
-[node name="CribPanel" type="VBoxContainer" parent="Margin/VBox"]
+[node name="CribPanel" type="VBoxContainer" parent="Margin/RootHBox/ContentVBox/HeaderBlock"]
 visible = false
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="CribHelpLabel" type="Label" parent="Margin/VBox/CribPanel"]
+[node name="CribHelpLabel" type="Label" parent="Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel"]
 layout_mode = 2
 text = "Select a crib card, choose Accept or Reject, then click a hex."
 
-[node name="CribContainer" type="HBoxContainer" parent="Margin/VBox/CribPanel"]
+[node name="CribContainer" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel"]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="CribActionRow" type="HBoxContainer" parent="Margin/VBox/CribPanel"]
+[node name="CribActionRow" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel"]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="CribAcceptButton" type="Button" parent="Margin/VBox/CribPanel/CribActionRow"]
+[node name="CribAcceptButton" type="Button" parent="Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribActionRow"]
 layout_mode = 2
 text = "Accept (remove cube)"
 
-[node name="CribRejectButton" type="Button" parent="Margin/VBox/CribPanel/CribActionRow"]
+[node name="CribRejectButton" type="Button" parent="Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribActionRow"]
 layout_mode = 2
 text = "Reject (place cube)"
 
-[node name="ConfirmCribButton" type="Button" parent="Margin/VBox/CribPanel/CribActionRow"]
+[node name="ConfirmCribButton" type="Button" parent="Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribActionRow"]
 layout_mode = 2
 disabled = true
 text = "Confirm Crib"
 
-[node name="ActionRow" type="HBoxContainer" parent="Margin/VBox"]
+[node name="PeggingSection" type="VBoxContainer" parent="Margin/RootHBox/ContentVBox"]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="PeggingLabel" type="Label" parent="Margin/RootHBox/ContentVBox/PeggingSection"]
+layout_mode = 2
+text = "Pegging"
+
+[node name="PeggingCountLabel" type="Label" parent="Margin/RootHBox/ContentVBox/PeggingSection"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "Count: 0 / 31"
+horizontal_alignment = 1
+
+[node name="PeggingTurnLabel" type="Label" parent="Margin/RootHBox/ContentVBox/PeggingSection"]
+layout_mode = 2
+text = "Turn: —"
+horizontal_alignment = 1
+
+[node name="PeggingScoreLayer" type="Control" parent="Margin/RootHBox/ContentVBox/PeggingSection"]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+mouse_filter = 2
+
+[node name="PeggingContainer" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox/PeggingSection"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="CardsBlock" type="VBoxContainer" parent="Margin/RootHBox/ContentVBox"]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="HandRow" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox/CardsBlock"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 92)
+theme_override_constants/separation = 12
+
+[node name="HandContainer" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox/CardsBlock/HandRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 92)
+size_flags_horizontal = 3
+size_flags_vertical = 0
+theme_override_constants/separation = 4
+
+[node name="CribDiscardsContainer" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox/CardsBlock/HandRow"]
+visible = false
+layout_mode = 2
+custom_minimum_size = Vector2(0, 92)
+size_flags_vertical = 0
+theme_override_constants/separation = 4
+alignment = 1
+
+[node name="ActionRow" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox"]
+visible = false
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="ConfirmDiscardButton" type="Button" parent="Margin/VBox/ActionRow"]
+[node name="ConfirmDiscardButton" type="Button" parent="Margin/RootHBox/ContentVBox/ActionRow"]
 layout_mode = 2
 visible = false
 text = "Confirm Discard"
 
-[node name="PassButton" type="Button" parent="Margin/VBox/ActionRow"]
+[node name="PassButton" type="Button" parent="Margin/RootHBox/ContentVBox/ActionRow"]
 visible = false
 layout_mode = 2
 text = "Pass (Go)"

@@ -6,25 +6,32 @@ signal pegging_pass_requested
 signal crib_hex_highlights_changed(target_hexes: Array)
 
 const CardWidgetScene := preload("res://scenes/card_widget.tscn")
+const HAND_CARD_SIZE := Vector2(64, 92)
+const UNPLAYABLE_CARD_DIM := Color(0.42, 0.42, 0.42, 1.0)
 
-@onready var message_label: Label = $Margin/VBox/MessageLabel
-@onready var cut_card_label: Label = $Margin/VBox/CutCardLabel
-@onready var pegging_label: Label = $Margin/VBox/PeggingLabel
-@onready var pegging_count_label: Label = $Margin/VBox/PeggingCountLabel
-@onready var pegging_turn_label: Label = $Margin/VBox/PeggingTurnLabel
-@onready var pegging_score_layer: Control = $Margin/VBox/PeggingScoreLayer
-@onready var hand_container: HBoxContainer = $Margin/VBox/HandContainer
-@onready var pegging_container: HBoxContainer = $Margin/VBox/PeggingContainer
-@onready var action_row: HBoxContainer = $Margin/VBox/ActionRow
-@onready var confirm_discard_button: Button = $Margin/VBox/ActionRow/ConfirmDiscardButton
-@onready var pass_button: Button = $Margin/VBox/ActionRow/PassButton
-@onready var crib_panel: VBoxContainer = $Margin/VBox/CribPanel
-@onready var crib_help_label: Label = $Margin/VBox/CribPanel/CribHelpLabel
-@onready var crib_container: HBoxContainer = $Margin/VBox/CribPanel/CribContainer
-@onready var crib_action_row: HBoxContainer = $Margin/VBox/CribPanel/CribActionRow
-@onready var crib_accept_button: Button = $Margin/VBox/CribPanel/CribActionRow/CribAcceptButton
-@onready var crib_reject_button: Button = $Margin/VBox/CribPanel/CribActionRow/CribRejectButton
-@onready var confirm_crib_button: Button = $Margin/VBox/CribPanel/CribActionRow/ConfirmCribButton
+@onready var message_label: Label = $Margin/RootHBox/ContentVBox/MessageLabel
+@onready var cut_card_label: Label = $Margin/RootHBox/ContentVBox/HeaderBlock/InfoRow/CutCardLabel
+@onready var pegging_section: VBoxContainer = $Margin/RootHBox/ContentVBox/PeggingSection
+@onready var pegging_label: Label = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingLabel
+@onready var pegging_count_label: Label = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingCountLabel
+@onready var pegging_turn_label: Label = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingTurnLabel
+@onready var pegging_score_layer: Control = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingScoreLayer
+@onready var cards_block: VBoxContainer = $Margin/RootHBox/ContentVBox/CardsBlock
+@onready var hand_row: HBoxContainer = $Margin/RootHBox/ContentVBox/CardsBlock/HandRow
+@onready var hand_container: HBoxContainer = $Margin/RootHBox/ContentVBox/CardsBlock/HandRow/HandContainer
+@onready var pegging_container: HBoxContainer = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingContainer
+@onready var action_row: HBoxContainer = $Margin/RootHBox/ContentVBox/ActionRow
+@onready var confirm_discard_button: Button = $Margin/RootHBox/ContentVBox/ActionRow/ConfirmDiscardButton
+@onready var pass_button: Button = $Margin/RootHBox/ContentVBox/ActionRow/PassButton
+@onready var crib_panel: VBoxContainer = $Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel
+@onready var crib_help_label: Label = $Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribHelpLabel
+@onready var crib_container: HBoxContainer = $Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribContainer
+@onready var crib_action_row: HBoxContainer = $Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribActionRow
+@onready var crib_accept_button: Button = $Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribActionRow/CribAcceptButton
+@onready var crib_reject_button: Button = $Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribActionRow/CribRejectButton
+@onready var confirm_crib_button: Button = $Margin/RootHBox/ContentVBox/HeaderBlock/CribPanel/CribActionRow/ConfirmCribButton
+@onready var crib_owner_label: Label = $Margin/RootHBox/ContentVBox/HeaderBlock/InfoRow/CribOwnerLabel
+@onready var crib_discards_container: HBoxContainer = $Margin/RootHBox/ContentVBox/CardsBlock/HandRow/CribDiscardsContainer
 
 var _local_hand: Array = []
 var _selected_indices: Array = []
@@ -67,9 +74,13 @@ func _ready() -> void:
 	GameState.action_turn_updated.connect(_on_action_turn_updated)
 	GameState.crib_resolution_updated.connect(_on_crib_resolution_updated)
 	GameState.show_hands_updated.connect(_on_show_hands_updated)
+	GameState.crib_discards_updated.connect(_on_crib_discards_updated)
+	GameState.round_context_updated.connect(_on_round_context_updated)
+	GameState.lobby_updated.connect(_on_lobby_updated)
 
 	_on_phase_changed(GameState.current_phase)
 	_refresh_hand_display()
+	_refresh_crib_reminder()
 
 
 func handle_crib_hex(hex_index: int) -> void:
@@ -218,11 +229,6 @@ func _on_action_turn_updated(_peer_id: int) -> void:
 		_refresh_action_hand_display()
 
 
-func _on_show_hands_updated() -> void:
-	if GameState.current_phase == GameState.Phase.SPEND_ACTIONS:
-		_refresh_action_hand_display()
-
-
 func _on_crib_resolution_updated(crib_cards: Array, resolved: Dictionary, _resolver_peer: int) -> void:
 	_crib_cards = crib_cards.duplicate(true)
 	_crib_choices = resolved.duplicate(true)
@@ -233,6 +239,7 @@ func _on_crib_resolution_updated(crib_cards: Array, resolved: Dictionary, _resol
 	_refresh_crib_display()
 	_update_crib_help()
 	_update_crib_action_buttons_visibility()
+	_refresh_crib_reminder()
 
 
 func _on_pegging_state_updated(sequence: Array, total: int, turn_peer: int) -> void:
@@ -246,6 +253,7 @@ func _on_pegging_state_updated(sequence: Array, total: int, turn_peer: int) -> v
 		PeggingRules.MAX_TOTAL,
 	]
 	_refresh_pegging_display(sequence)
+	_refresh_hand_display()
 	_update_action_buttons()
 
 
@@ -339,6 +347,7 @@ func _on_phase_changed(phase: GameState.Phase) -> void:
 			elif phase == GameState.Phase.ROUND_END:
 				message_label.text = "Round complete. Click Start Round for the next round."
 	_refresh_hand_display()
+	_refresh_crib_reminder()
 
 
 func _on_game_message(message: String) -> void:
@@ -349,6 +358,7 @@ func _on_active_control_changed(_peer_id: int) -> void:
 	_selected_indices.clear()
 	_update_action_buttons()
 	_refresh_hand_display()
+	_refresh_crib_reminder()
 	if GameState.current_phase == GameState.Phase.SPEND_ACTIONS:
 		_refresh_action_hand_display()
 	if _is_crib_resolution_phase():
@@ -367,6 +377,85 @@ func _refresh_action_hand_display() -> void:
 	_refresh_hand_display()
 
 
+func _on_show_hands_updated() -> void:
+	if GameState.current_phase == GameState.Phase.SPEND_ACTIONS:
+		_refresh_action_hand_display()
+	elif GameState.current_phase == GameState.Phase.SHOW_HANDS:
+		_refresh_hand_display()
+
+
+func _on_crib_discards_updated() -> void:
+	_refresh_crib_reminder()
+
+
+func _on_round_context_updated(_dealer_peer_id: int, _crib_owner_peer_id: int) -> void:
+	_refresh_crib_reminder()
+
+
+func _on_lobby_updated() -> void:
+	_refresh_crib_reminder()
+
+
+func _refresh_crib_reminder() -> void:
+	var show_phase := GameState.current_phase in [
+		GameState.Phase.DISCARD_TO_CRIB,
+		GameState.Phase.CUT_CARD,
+		GameState.Phase.PEGGING,
+		GameState.Phase.SHOW_HANDS,
+		GameState.Phase.SHOP,
+		GameState.Phase.SPEND_ACTIONS,
+		GameState.Phase.RESOLVE_CRIB,
+	]
+	var crib_owner := GameState.get_crib_owner_peer_id()
+	var resolving_crib := _is_crib_resolution_phase() and GameState.is_crib_resolver_for_control()
+	var show_crib := show_phase and crib_owner != 0 and not resolving_crib
+	crib_owner_label.visible = show_crib
+	crib_discards_container.visible = show_crib
+	if not show_crib:
+		for child in crib_discards_container.get_children():
+			child.queue_free()
+		_update_cards_block_visibility()
+		return
+
+	var control_peer := GameState.get_control_peer_id()
+	if crib_owner == control_peer:
+		crib_owner_label.text = "Your Crib"
+	else:
+		var owner_name: String = GameState.player_names.get(crib_owner, "Player %d" % crib_owner)
+		crib_owner_label.text = "%s's Crib" % owner_name
+
+	for child in crib_discards_container.get_children():
+		child.queue_free()
+
+	var cards: Array = GameState.get_crib_discards_for_peer(control_peer)
+	var card_count := maxi(cards.size(), 2)
+	var crib_width := card_count * int(HAND_CARD_SIZE.x) + maxi(0, card_count - 1) * 4
+	crib_owner_label.custom_minimum_size.x = crib_width
+	for card_index in range(cards.size()):
+		var card_widget: CardWidget = _make_card_widget(card_index, cards[card_index], true)
+		crib_discards_container.add_child(card_widget)
+
+	_update_cards_block_visibility()
+
+
+func _update_cards_block_visibility() -> void:
+	var has_hand := hand_container.get_child_count() > 0
+	var show_crib := crib_discards_container.visible
+	var resolving_crib := _is_crib_resolution_phase() and GameState.is_crib_resolver_for_control()
+	cards_block.visible = (has_hand or show_crib) and not resolving_crib
+	hand_row.custom_minimum_size = Vector2(0, 92 if cards_block.visible else 0)
+
+
+func _make_card_widget(index: int, card: Dictionary, disabled: bool = false) -> CardWidget:
+	var card_widget: CardWidget = CardWidgetScene.instantiate()
+	card_widget.custom_minimum_size = HAND_CARD_SIZE
+	card_widget.size = HAND_CARD_SIZE
+	card_widget.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	card_widget.disabled = disabled
+	card_widget.setup(index, card)
+	return card_widget
+
+
 func _refresh_hand_display() -> void:
 	for child in hand_container.get_children():
 		child.queue_free()
@@ -383,14 +472,19 @@ func _refresh_hand_display() -> void:
 		cards_to_show = _local_hand
 
 	for i in range(cards_to_show.size()):
-		var card_widget: CardWidget = CardWidgetScene.instantiate()
+		var card_widget: CardWidget = _make_card_widget(i, cards_to_show[i])
 		hand_container.add_child(card_widget)
-		card_widget.setup(i, cards_to_show[i])
 		card_widget.card_pressed.connect(_on_card_pressed)
 		if GameState.current_phase == GameState.Phase.DISCARD_TO_CRIB and _selected_indices.has(i):
 			card_widget.modulate = Color(1, 1, 0.7)
+		elif GameState.current_phase == GameState.Phase.PEGGING:
+			if not PeggingRules.can_play(cards_to_show[i], GameState.pegging_total):
+				card_widget.modulate *= UNPLAYABLE_CARD_DIM
+				card_widget.disabled = true
 		elif GameState.current_phase in [GameState.Phase.SPEND_ACTIONS, GameState.Phase.SHOW_HANDS]:
 			card_widget.disabled = true
+
+	_update_cards_block_visibility()
 
 
 func _refresh_crib_display() -> void:
@@ -398,9 +492,8 @@ func _refresh_crib_display() -> void:
 		child.queue_free()
 
 	for i in range(_crib_cards.size()):
-		var card_widget: CardWidget = CardWidgetScene.instantiate()
+		var card_widget: CardWidget = _make_card_widget(i, _crib_cards[i])
 		crib_container.add_child(card_widget)
-		card_widget.setup(i, _crib_cards[i])
 		card_widget.card_pressed.connect(_on_crib_card_pressed)
 		if _crib_choices.has(i):
 			card_widget.modulate = Color(0.7, 1.0, 0.7)
@@ -416,10 +509,8 @@ func _refresh_pegging_display(sequence: Array) -> void:
 		child.queue_free()
 
 	for i in range(sequence.size()):
-		var card_widget: CardWidget = CardWidgetScene.instantiate()
+		var card_widget: CardWidget = _make_card_widget(i, sequence[i], true)
 		pegging_container.add_child(card_widget)
-		card_widget.setup(i, sequence[i])
-		card_widget.disabled = true
 
 
 func _on_card_pressed(index: int) -> void:
@@ -466,6 +557,7 @@ func _update_crib_visibility(phase: GameState.Phase) -> void:
 	else:
 		_required_accepts = 0
 	_update_crib_action_buttons_visibility()
+	_refresh_crib_reminder()
 
 
 func _update_crib_action_buttons_visibility() -> void:
@@ -563,6 +655,7 @@ func _update_action_buttons() -> void:
 	confirm_discard_button.visible = phase == GameState.Phase.DISCARD_TO_CRIB and _can_discard_for_control()
 	pass_button.visible = phase == GameState.Phase.PEGGING and _is_my_pegging_turn()
 	pass_button.disabled = not _can_pass_pegging()
+	action_row.visible = confirm_discard_button.visible or pass_button.visible
 
 
 func _is_my_pegging_turn() -> bool:
@@ -579,11 +672,7 @@ func _can_pass_pegging() -> bool:
 
 func _update_pegging_visibility(phase: GameState.Phase) -> void:
 	var in_pegging := phase == GameState.Phase.PEGGING
-	pegging_label.visible = in_pegging
-	pegging_count_label.visible = in_pegging
-	pegging_turn_label.visible = in_pegging
-	pegging_score_layer.visible = in_pegging
-	pegging_container.visible = in_pegging
+	pegging_section.visible = in_pegging
 	if not in_pegging:
 		_pegging_popup_count = 0
 

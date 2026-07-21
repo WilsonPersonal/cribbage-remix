@@ -3,7 +3,7 @@ extends Control
 signal hex_clicked(hex_index: int)
 
 const HEX_RADIUS := 62.0
-const BOARD_OFFSET := Vector2(-40.0, 0.0)
+const BOARD_OFFSET := Vector2(-60.0, 0.0)
 
 const TERRAIN_COLORS := {
 	HexBoard.Terrain.MOUNTAIN: Color("#8a9098"),

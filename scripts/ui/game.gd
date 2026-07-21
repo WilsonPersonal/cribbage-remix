@@ -4,7 +4,7 @@ const HUD_WIDTH_RATIO := 0.28
 const MAIN_WIDTH_RATIO := 0.72
 const SHOP_PANEL_WIDTH_RATIO := MAIN_WIDTH_RATIO / 3.0
 const CARD_PANEL_HEIGHT := 200
-const SHOP_PANEL_HEIGHT := 132
+const SHOP_PANEL_HEIGHT := 152
 const CUBE_MOVE_SPIN_MAX := 5
 const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 
@@ -15,11 +15,6 @@ const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 @onready var pegging_count_label: Label = $HUD/Margin/VBox/PeggingCountLabel
 @onready var pegging_turn_label: Label = $HUD/Margin/VBox/PeggingTurnLabel
 @onready var influence_display: VBoxContainer = $HUD/Margin/VBox/InfluenceDisplay
-@onready var coins_label: Label = $HUD/Margin/VBox/CoinsLabel
-@onready var crib_reminder_panel: VBoxContainer = $HUD/Margin/VBox/CribReminderPanel
-@onready var crib_owner_label: Label = $HUD/Margin/VBox/CribReminderPanel/CribOwnerLabel
-@onready var crib_discards_row: HBoxContainer = $HUD/Margin/VBox/CribReminderPanel/CribDiscardsRow
-@onready var crib_discard_cubes = $HUD/Margin/VBox/CribReminderPanel/CribDiscardsRow/CribDiscardCubes
 @onready var action_points_label: Label = $HUD/Margin/VBox/ActionPointsLabel
 @onready var show_action_scoring_button: Button = $HUD/Margin/VBox/ShowActionScoringButton
 @onready var action_scoring_panel: PanelContainer = $HUD/Margin/VBox/ActionScoringPanel
@@ -81,8 +76,6 @@ func _ready() -> void:
 	GameState.action_cart_anim_requested.connect(_on_action_cart_anim_requested)
 	GameState.lobby_updated.connect(_on_lobby_updated)
 	GameState.show_hands_updated.connect(_on_show_hands_updated)
-	GameState.crib_discards_updated.connect(_on_crib_discards_updated)
-	GameState.round_context_updated.connect(_on_round_context_updated)
 	GameState.cut_card_updated.connect(_on_cut_card_updated_for_scoring)
 	NetworkManager.player_connected.connect(_on_player_connected)
 	NetworkManager.player_disconnected.connect(_on_player_disconnected)
@@ -168,10 +161,8 @@ func _apply_layout() -> void:
 	var main_right := MAIN_WIDTH_RATIO
 	var card_height := float(CARD_PANEL_HEIGHT)
 	var shop_height := float(SHOP_PANEL_HEIGHT)
-	var in_actions := GameState.current_phase == GameState.Phase.SPEND_ACTIONS
-	var board_top := shop_height if in_actions else 0.0
 
-	shop_panel.visible = in_actions
+	shop_panel.visible = true
 	shop_panel.set_anchors_preset(Control.PRESET_TOP_LEFT, true)
 	shop_panel.anchor_left = main_right - SHOP_PANEL_WIDTH_RATIO
 	shop_panel.anchor_top = 0.0
@@ -200,9 +191,10 @@ func _apply_layout() -> void:
 	board.anchor_right = main_right
 	board.anchor_bottom = 1.0
 	board.offset_left = 0.0
-	board.offset_top = board_top
+	board.offset_top = 0.0
 	board.offset_right = 0.0
 	board.offset_bottom = -card_height
+	board.z_index = 0
 
 	card_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT, true)
 	card_panel.anchor_left = 0.0
@@ -445,16 +437,7 @@ func _on_lobby_updated() -> void:
 
 
 func _on_show_hands_updated() -> void:
-	_update_crib_reminder()
 	_update_action_scoring_ui()
-
-
-func _on_crib_discards_updated() -> void:
-	_update_crib_reminder()
-
-
-func _on_round_context_updated(_dealer_peer_id: int, _crib_owner_peer_id: int) -> void:
-	_update_crib_reminder()
 
 
 func _on_player_connected(peer_id: int) -> void:
@@ -574,7 +557,6 @@ func _on_phase_changed(_phase: GameState.Phase) -> void:
 	_update_action_phase_ui()
 	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	_update_action_help()
-	_update_crib_reminder()
 	_update_action_scoring_ui()
 	_apply_layout()
 	_refresh_ui()
@@ -1123,58 +1105,10 @@ func _refresh_ui() -> void:
 	phase_label.text = "Phase: %s" % _phase_name(GameState.current_phase)
 	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	influence_display.refresh()
-	coins_label.text = _format_coins()
-	_update_crib_reminder()
 	_update_action_scoring_ui()
 	action_points_label.text = _format_action_points()
 	_update_actions_left_big_display()
 	board.queue_redraw()
-
-
-func _format_coins() -> String:
-	if GameState.player_coins.is_empty():
-		return "Coins: none yet"
-
-	var lines: PackedStringArray = ["Coins (from pegging):"]
-	for peer_id in GameState.player_coins.keys():
-		var player_name: String = GameState.player_names.get(peer_id, "Player %d" % peer_id)
-		lines.append("%s: %d" % [player_name, GameState.player_coins[peer_id]])
-
-	return "\n".join(lines)
-
-
-func _update_crib_reminder() -> void:
-	var show_phase := GameState.current_phase in [
-		GameState.Phase.DISCARD_TO_CRIB,
-		GameState.Phase.CUT_CARD,
-		GameState.Phase.PEGGING,
-		GameState.Phase.SHOW_HANDS,
-		GameState.Phase.SHOP,
-		GameState.Phase.SPEND_ACTIONS,
-		GameState.Phase.RESOLVE_CRIB,
-	]
-	var crib_owner := GameState.get_crib_owner_peer_id()
-	var has_crib_owner := crib_owner != 0
-	crib_reminder_panel.visible = show_phase and has_crib_owner
-	if not crib_reminder_panel.visible:
-		return
-
-	var owner_name: String = GameState.player_names.get(crib_owner, "Player %d" % crib_owner)
-	var control_peer := GameState.get_control_peer_id()
-	if crib_owner == control_peer:
-		crib_owner_label.text = "Crib belongs to you."
-	else:
-		crib_owner_label.text = "Crib belongs to %s." % owner_name
-
-	var cards: Array = GameState.get_crib_discards_for_peer(control_peer)
-	if cards.is_empty():
-		crib_discards_row.visible = false
-	else:
-		crib_discards_row.visible = true
-		var faction_ids: Array = []
-		for card in cards:
-			faction_ids.append(Factions.from_suit(str(card.get("suit", "clubs"))))
-		crib_discard_cubes.set_factions(faction_ids)
 
 
 func _update_action_scoring_ui() -> void:
