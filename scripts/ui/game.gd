@@ -716,6 +716,15 @@ func _action_selection_ready() -> bool:
 	return _selected_action_type >= 0
 
 
+func _action_blocked_message(peer_id: int, faction_id: int) -> String:
+	if GameState.is_faction_influence_locked(peer_id, faction_id):
+		return (
+			"An opponent leads %s influence by %d+ — buy a Queen to act."
+			% [Factions.name_for(faction_id), RemixRules.INFLUENCE_ACTION_LOCK_GAP]
+		)
+	return "No actions left for %s." % Factions.name_for(faction_id)
+
+
 func _try_create_cart(hex_index: int, peer_id: int) -> void:
 	if hex_index not in HexBoard.MOUNTAIN_HEXES:
 		action_help_label.text = "Carts can only be created on mountain hexes."
@@ -726,7 +735,7 @@ func _try_create_cart(hex_index: int, peer_id: int) -> void:
 		action_help_label.text = "No faction controls that hex."
 		return
 	if not GameState.player_can_afford_action(peer_id, faction_id):
-		action_help_label.text = "No actions left for %s." % Factions.name_for(faction_id)
+		action_help_label.text = _action_blocked_message(peer_id, faction_id)
 		return
 
 	GameState.submit_faction_action(hex_index, ActionSystem.Type.CREATE_CART)
@@ -745,7 +754,7 @@ func _try_push(hex_index: int, peer_id: int) -> void:
 			action_help_label.text = "No faction controls that hex."
 			return
 		if not GameState.player_can_afford_action(peer_id, faction_id):
-			action_help_label.text = "No actions left for %s." % Factions.name_for(faction_id)
+			action_help_label.text = _action_blocked_message(peer_id, faction_id)
 			return
 
 		var max_cubes := _effective_cube_max(peer_id, faction_id, hex_index)
@@ -797,7 +806,7 @@ func _try_pull(hex_index: int, peer_id: int) -> void:
 			action_help_label.text = "No faction controls that hex."
 			return
 		if not GameState.player_can_afford_action(peer_id, faction_id):
-			action_help_label.text = "No actions left for %s." % Factions.name_for(faction_id)
+			action_help_label.text = _action_blocked_message(peer_id, faction_id)
 			return
 
 		_selected_source_hex = hex_index
@@ -980,6 +989,12 @@ func _try_shop_jack_push(hex_index: int) -> void:
 	var faction_id := GameState.get_pending_shop_deploy_faction()
 	if faction_id < 0:
 		return
+	if not GameState.player_can_act_with_faction(GameState.get_action_turn_peer_id(), faction_id):
+		action_help_label.text = _action_blocked_message(
+			GameState.get_action_turn_peer_id(),
+			faction_id
+		)
+		return
 
 	if _shop_jack_source_hex < 0:
 		if GameState.get_faction_cubes_on_hex(hex_index, faction_id) <= 0:
@@ -1039,6 +1054,12 @@ func _try_shop_king_deploy(hex_index: int) -> void:
 
 	var faction_id := GameState.get_pending_shop_deploy_faction()
 	if faction_id < 0:
+		return
+	if not GameState.player_can_act_with_faction(GameState.get_action_turn_peer_id(), faction_id):
+		action_help_label.text = _action_blocked_message(
+			GameState.get_action_turn_peer_id(),
+			faction_id
+		)
 		return
 
 	if hex_index not in GameState.get_hexes_with_deploy_space(faction_id):

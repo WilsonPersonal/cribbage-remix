@@ -457,11 +457,42 @@ func get_adjacent_hexes(hex_index: int) -> Array:
 	return HexBoard.ADJACENCY.get(hex_index, []).duplicate()
 
 
+func is_faction_influence_locked(peer_id: int, faction_id: int) -> bool:
+	if faction_id not in Factions.ALL:
+		return false
+
+	var my_influence := RemixRules.faction_dict_value(
+		player_influence.get(peer_id, RemixRules.empty_influence()),
+		faction_id
+	)
+	for opponent_id in active_player_order:
+		var opponent := int(opponent_id)
+		if opponent == int(peer_id):
+			continue
+		var opponent_influence := RemixRules.faction_dict_value(
+			player_influence.get(opponent, RemixRules.empty_influence()),
+			faction_id
+		)
+		if opponent_influence - my_influence >= RemixRules.INFLUENCE_ACTION_LOCK_GAP:
+			return true
+	return false
+
+
+func player_can_act_with_faction(peer_id: int, faction_id: int) -> bool:
+	if faction_id not in Factions.ALL:
+		return true
+	if _has_queen_shop_bypass(peer_id, faction_id):
+		return true
+	return not is_faction_influence_locked(peer_id, faction_id)
+
+
 func player_can_afford_action(peer_id: int, faction_id: int) -> bool:
 	if _has_pending_shop_action(peer_id):
 		if get_pending_shop_effect() != Shop.EFFECT_QUEEN:
 			return false
 		return _pending_shop_action_matches_faction(faction_id)
+	if not player_can_act_with_faction(peer_id, faction_id):
+		return false
 	var tokens: Dictionary = player_faction_actions.get(peer_id, RemixRules.empty_faction_actions())
 	if RemixRules.faction_dict_value(tokens, faction_id) > 0:
 		return true
@@ -473,12 +504,20 @@ func player_can_afford_action(peer_id: int, faction_id: int) -> bool:
 func player_can_afford_any_action(peer_id: int) -> bool:
 	if _has_pending_shop_action(peer_id):
 		return true
-	if ActionSystem.can_afford(get_action_points_for_peer(peer_id)):
-		return true
 	var tokens: Dictionary = player_faction_actions.get(peer_id, RemixRules.empty_faction_actions())
 	for faction in Factions.SHOP_FACTIONS:
-		if RemixRules.faction_dict_value(tokens, faction) > 0:
+		if RemixRules.faction_dict_value(tokens, faction) <= 0:
+			continue
+		if faction == Factions.Id.SPADES:
+			for board_faction in Factions.ALL:
+				if player_can_act_with_faction(peer_id, board_faction):
+					return true
+		elif player_can_act_with_faction(peer_id, faction):
 			return true
+	if ActionSystem.can_afford(get_action_points_for_peer(peer_id)):
+		for board_faction in Factions.ALL:
+			if player_can_act_with_faction(peer_id, board_faction):
+				return true
 	return false
 
 
@@ -639,7 +678,12 @@ func start_new_round() -> void:
 	crib_owner_peer_id = 0
 	show_hands.clear()
 	_clear_and_sync_crib_discards()
-	_setup_face_card_shop()
+	if round_number == 1:
+		_setup_face_card_shop()
+	else:
+		_refill_empty_shop_slots()
+		if multiplayer.is_server():
+			_broadcast_shop_state()
 	_deck.clear()
 
 	for peer_id in player_names.keys():
@@ -955,6 +999,8 @@ func request_shop_jack_push(from_hex: int, to_hex: int) -> void:
 	var deploy_faction := get_pending_shop_deploy_faction()
 	if deploy_faction < 0:
 		return
+	if not player_can_act_with_faction(peer_id, deploy_faction):
+		return
 	if from_hex < 0 or to_hex < 0:
 		return
 	if from_hex == to_hex:
@@ -992,6 +1038,8 @@ func request_shop_king_deploy(hex_index: int) -> void:
 
 	var deploy_faction := get_pending_shop_deploy_faction()
 	if deploy_faction < 0:
+		return
+	if not player_can_act_with_faction(peer_id, deploy_faction):
 		return
 	if hex_index < 0 or hex_index >= HexBoard.HEX_COUNT:
 		return
@@ -2071,6 +2119,14 @@ func _refill_shop_slot(slot_index: int) -> void:
 	slot["card"] = _face_card_deck.pop_back().duplicate(true)
 
 
+func _compact_shop_after_round() -> void:
+	if shop_slots.is_empty():
+		return
+	Shop.compact_after_round(shop_slots)
+	if multiplayer.is_server():
+		_broadcast_shop_state()
+
+
 func _shop_slot(slot_index: int) -> Dictionary:
 	if slot_index < 0 or slot_index >= shop_slots.size():
 		return {}
@@ -2156,6 +2212,14 @@ func _pending_shop_action_matches_faction(hex_faction_id: int) -> bool:
 	if pending_faction == Factions.Id.SPADES:
 		return hex_faction_id in Factions.ALL
 	return pending_faction == hex_faction_id
+
+
+func _has_queen_shop_bypass(peer_id: int, faction_id: int) -> bool:
+	if not _has_pending_shop_action(peer_id):
+		return false
+	if get_pending_shop_effect() != Shop.EFFECT_QUEEN:
+		return false
+	return _pending_shop_action_matches_faction(faction_id)
 
 
 func _broadcast_faction_actions() -> void:
@@ -2290,6 +2354,8 @@ func _apply_crib_choice(
 
 
 func _affordable_action_count(peer_id: int, faction_id: int) -> int:
+	if not player_can_act_with_faction(peer_id, faction_id):
+		return 0
 	var count := get_action_points_for_peer(peer_id)
 	var tokens: Dictionary = player_faction_actions.get(peer_id, RemixRules.empty_faction_actions())
 	count += RemixRules.faction_dict_value(tokens, faction_id)
@@ -2461,6 +2527,8 @@ func _apply_faction_scores_state(scores: Dictionary, recency: Dictionary) -> voi
 
 func _finish_round() -> void:
 	_mini_cribs_completed_for_round = false
+	_clear_pending_shop_action()
+	_compact_shop_after_round()
 	if get_total_faction_score() >= RemixRules.ENDING_SCORE_TOTAL:
 		ending_round_triggered = true
 		_set_phase(Phase.ROUND_END)
