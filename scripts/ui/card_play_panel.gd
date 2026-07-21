@@ -15,7 +15,6 @@ const UNPLAYABLE_CARD_DIM := Color(0.42, 0.42, 0.42, 1.0)
 @onready var pegging_label: Label = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingLabel
 @onready var pegging_count_label: Label = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingCountLabel
 @onready var pegging_turn_label: Label = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingTurnLabel
-@onready var pegging_score_layer: Control = $Margin/RootHBox/ContentVBox/PeggingSection/PeggingScoreLayer
 @onready var cards_block: VBoxContainer = $Margin/RootHBox/ContentVBox/CardsBlock
 @onready var hand_row: HBoxContainer = $Margin/RootHBox/ContentVBox/CardsBlock/HandRow
 @onready var hand_container: HBoxContainer = $Margin/RootHBox/ContentVBox/CardsBlock/HandRow/HandContainer
@@ -42,7 +41,6 @@ var _crib_mode_selected: bool = false
 var _pending_crib_accept: bool = false
 var _crib_choices: Dictionary = {}
 var _required_accepts: int = 0
-var _pegging_popup_count: int = 0
 
 
 func _ready() -> void:
@@ -67,7 +65,6 @@ func _ready() -> void:
 	GameState.local_hand_updated.connect(_on_local_hand_updated)
 	GameState.cut_card_updated.connect(_on_cut_card_updated)
 	GameState.pegging_state_updated.connect(_on_pegging_state_updated)
-	GameState.pegging_score_scored.connect(_on_pegging_score_scored)
 	GameState.phase_changed.connect(_on_phase_changed)
 	GameState.game_message.connect(_on_game_message)
 	GameState.active_control_changed.connect(_on_active_control_changed)
@@ -255,52 +252,6 @@ func _on_pegging_state_updated(sequence: Array, total: int, turn_peer: int) -> v
 	_refresh_pegging_display(sequence)
 	_refresh_hand_display()
 	_update_action_buttons()
-
-
-func _on_pegging_score_scored(_peer_id: int, event_type: String, points: int) -> void:
-	var score_name := CribbageScoring.pegging_event_label(event_type)
-	_show_pegging_score_popup("%s: +%d" % [score_name, points])
-
-
-func _show_pegging_score_popup(text: String) -> void:
-	var overlay: Control = get_parent()
-	var popup := Label.new()
-	popup.text = text
-	popup.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	popup.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	popup.autowrap_mode = TextServer.AUTOWRAP_OFF
-	popup.add_theme_font_size_override("font_size", 22)
-	popup.add_theme_color_override("font_color", Color(1.0, 0.94, 0.55))
-	popup.modulate.a = 0.0
-	popup.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	popup.anchor_left = 0.0
-	popup.anchor_top = 1.0
-	popup.anchor_right = float(overlay.get("MAIN_WIDTH_RATIO"))
-	popup.anchor_bottom = 1.0
-	var card_panel_height := float(overlay.get("CARD_PANEL_HEIGHT"))
-	var bottom := -card_panel_height - 10.0 - float(_pegging_popup_count * 26)
-	popup.offset_bottom = bottom
-	popup.offset_top = bottom - 24.0
-	popup.offset_left = 0.0
-	popup.offset_right = 0.0
-	popup.z_index = 20
-	overlay.add_child(popup)
-	_pegging_popup_count += 1
-
-	var start_y := popup.offset_top
-	var tween := popup.create_tween()
-	tween.set_parallel(true)
-	tween.tween_property(popup, "modulate:a", 1.0, 0.12)
-	tween.tween_property(popup, "offset_top", start_y - 18.0, 0.85).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-	tween.tween_property(popup, "offset_bottom", start_y - 18.0 + 24.0, 0.85).set_trans(Tween.TRANS_SINE).set_ease(
-		Tween.EASE_OUT
-	)
-	tween.set_parallel(false)
-	tween.tween_property(popup, "modulate:a", 0.0, 0.25).set_delay(0.45)
-	tween.tween_callback(func() -> void:
-		popup.queue_free()
-		_pegging_popup_count = maxi(0, _pegging_popup_count - 1)
-	)
 
 
 func _on_phase_changed(phase: GameState.Phase) -> void:
@@ -673,8 +624,6 @@ func _can_pass_pegging() -> bool:
 func _update_pegging_visibility(phase: GameState.Phase) -> void:
 	var in_pegging := phase == GameState.Phase.PEGGING
 	pegging_section.visible = in_pegging
-	if not in_pegging:
-		_pegging_popup_count = 0
 
 	if in_pegging:
 		pegging_count_label.text = "Count: %d / %d" % [

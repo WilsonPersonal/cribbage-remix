@@ -42,24 +42,24 @@ static func compact_after_round(slots: Array) -> void:
 	if rightmost < 0 or rightmost >= slots.size():
 		return
 
-	var right_slot: Dictionary = slots[rightmost]
-	if typeof(right_slot.get("card", {})) == TYPE_DICTIONARY:
-		right_slot["card"] = {}
+	slots[rightmost]["card"] = {}
 
-	var remaining_cards: Array = []
-	for slot_index in range(rightmost):
-		var slot: Dictionary = slots[slot_index]
-		var card: Dictionary = slot.get("card", {}) if typeof(slot.get("card", {})) == TYPE_DICTIONARY else {}
-		if not card.is_empty():
-			remaining_cards.append(card.duplicate(true))
-		slot["card"] = {}
-
-	if remaining_cards.is_empty():
-		return
-
-	var start_index := rightmost - remaining_cards.size() + 1
-	for card_index in range(remaining_cards.size()):
-		var target_index := start_index + card_index
-		if target_index < 0 or target_index >= slots.size():
+	for target_index in range(rightmost, 0, -1):
+		var target_slot: Dictionary = slots[target_index]
+		if not _slot_card(target_slot).is_empty():
 			continue
-		slots[target_index]["card"] = remaining_cards[card_index]
+		for source_index in range(target_index - 1, -1, -1):
+			var source_slot: Dictionary = slots[source_index]
+			var card: Dictionary = _slot_card(source_slot)
+			if card.is_empty():
+				continue
+			target_slot["card"] = card.duplicate(true)
+			source_slot["card"] = {}
+			break
+
+
+static func _slot_card(slot: Dictionary) -> Dictionary:
+	var card = slot.get("card", {})
+	if typeof(card) != TYPE_DICTIONARY:
+		return {}
+	return card

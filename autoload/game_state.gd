@@ -49,8 +49,11 @@ signal active_control_changed(peer_id: int)
 signal lobby_updated
 
 var offline_debug_mode: bool = false
+var vs_ai_mode: bool = false
+var pending_vs_ai: bool = false
 var active_control_peer_id: int = 1
 var pending_local_player_name: String = ""
+var _acting_peer_override: int = -1
 
 var current_phase: Phase = Phase.WAITING
 var round_number: int = 0
@@ -113,6 +116,8 @@ func setup_offline_session(player_one_name: String = "Player 1", player_two_name
 		return
 
 	offline_debug_mode = true
+	vs_ai_mode = false
+	AiController.disable()
 	player_names.clear()
 	player_influence.clear()
 	player_supply.clear()
@@ -123,6 +128,34 @@ func setup_offline_session(player_one_name: String = "Player 1", player_two_name
 	register_player(2, player_two_name)
 	set_active_control_peer(1)
 	_broadcast_message("Offline debug: switch players to control each seat. Dealing cards...")
+
+
+func setup_offline_vs_ai(human_name: String = "You", ai_name: String = "AI") -> void:
+	setup_offline_session(human_name, ai_name)
+	vs_ai_mode = true
+	AiController.enable_for_peers([2])
+	_broadcast_message("Playing vs %s. You are %s." % [ai_name, human_name])
+
+
+func is_ai_peer(peer_id: int) -> bool:
+	return vs_ai_mode and AiController.is_ai_peer(peer_id)
+
+
+func get_hand_for_peer(peer_id: int) -> Array:
+	return hands.get(peer_id, []).duplicate(true)
+
+
+func get_available_cube_space(faction_id: int, hex_index: int) -> int:
+	return _board.available_cube_space(faction_id, hex_index)
+
+
+func run_as_peer(peer_id: int, callback: Callable) -> void:
+	if not multiplayer.is_server():
+		return
+	var previous_override := _acting_peer_override
+	_acting_peer_override = peer_id
+	callback.call()
+	_acting_peer_override = previous_override
 
 
 func set_pending_local_player_name(player_name: String) -> void:
@@ -235,6 +268,8 @@ func is_controlled_turn(peer_id: int) -> bool:
 
 
 func _action_peer_id() -> int:
+	if _acting_peer_override >= 0:
+		return _acting_peer_override
 	if offline_debug_mode:
 		return active_control_peer_id
 	var sender := multiplayer.get_remote_sender_id()
@@ -421,15 +456,153 @@ func can_purchase_shop_card(card: Dictionary) -> bool:
 	return false
 
 
+func shop_purchase_has_valid_follow_up(peer_id: int, card: Dictionary) -> bool:
+	var faction_id := _shop_card_faction_id(card)
+	match Shop.card_effect(card):
+		Shop.EFFECT_JACK:
+			if faction_id == Factions.Id.SPADES:
+				for board_faction in Factions.ALL:
+					if _has_valid_jack_pushes(peer_id, board_faction):
+						return true
+				return false
+			return _has_valid_jack_pushes(peer_id, faction_id)
+		Shop.EFFECT_KING:
+			if faction_id == Factions.Id.SPADES:
+				for board_faction in Factions.ALL:
+					if _has_valid_king_deploys(peer_id, board_faction):
+						return true
+				return false
+			return _has_valid_king_deploys(peer_id, faction_id)
+		Shop.EFFECT_QUEEN:
+			if faction_id == Factions.Id.SPADES:
+				for board_faction in Factions.ALL:
+					if faction_has_dominance(board_faction) and _has_queen_map_actions(
+						peer_id,
+						board_faction
+					):
+						return true
+				return false
+			if not faction_has_dominance(faction_id):
+				return false
+			return _has_queen_map_actions(peer_id, faction_id)
+	return true
+
+
+func can_buy_shop_slot(peer_id: int, slot_index: int) -> bool:
+	return get_shop_slot_block_reason(peer_id, slot_index).is_empty()
+
+
+func get_shop_slot_block_reason(peer_id: int, slot_index: int) -> String:
+	if current_phase != Phase.SPEND_ACTIONS:
+		return "Shop purchases are only available during the action phase."
+	if not is_action_turn_for_control():
+		return "Wait for your action turn to buy from the shop."
+	if int(peer_id) != int(get_control_peer_id()):
+		return "Shop purchases are only available for the active player."
+	if int(peer_id) != int(action_turn_peer_id):
+		return "Shop purchases are only allowed on your action turn."
+	if _has_pending_shop_action(peer_id):
+		return "Complete your current shop purchase on the map first."
+	if slot_index < 0 or slot_index >= Shop.SLOT_COUNT:
+		return "That shop slot is invalid."
+
+	var slot: Dictionary = _shop_slot(slot_index)
+	var card: Dictionary = _shop_slot_card(slot)
+	if slot.is_empty() or card.is_empty():
+		return "That shop slot is empty."
+
+	var cost := int(slot.get("cost", Shop.slot_cost(slot_index)))
+	if int(player_coins.get(peer_id, 0)) < cost:
+		return "Not enough coins for that shop card."
+
+	if not can_purchase_shop_card(card):
+		var card_faction_id := _shop_card_faction_id(card)
+		match Shop.card_effect(card):
+			Shop.EFFECT_QUEEN:
+				if card_faction_id == Factions.Id.SPADES:
+					return "That wild Queen needs at least one dominated hex on the board."
+				return "%s needs a dominated hex before that Queen can be bought." % Factions.name_for(
+					card_faction_id
+				)
+			Shop.EFFECT_JACK:
+				if card_faction_id == Factions.Id.SPADES:
+					return "That wild Jack needs cubes from at least one faction on the board."
+				return "%s needs cubes on the board before that Jack can be bought." % Factions.name_for(
+					card_faction_id
+				)
+			Shop.EFFECT_KING:
+				return "That shop card cannot be purchased right now."
+		return "That shop card cannot be purchased right now."
+
+	if not shop_purchase_has_valid_follow_up(peer_id, card):
+		match Shop.card_effect(card):
+			Shop.EFFECT_QUEEN:
+				return "That Queen has no legal Push, Pull, or Cart follow-up right now."
+			Shop.EFFECT_JACK:
+				return "That Jack has no legal cube push right now."
+			Shop.EFFECT_KING:
+				return "That King has no legal deploy space right now."
+		return "That shop card has no legal follow-up action right now."
+
+	return ""
+
+
+func notify_ui_message(message: String) -> void:
+	game_message.emit(message)
+
+
+func _has_valid_jack_pushes(peer_id: int, faction_id: int) -> bool:
+	if not faction_has_cubes_on_board(faction_id):
+		return false
+	if not player_can_act_with_faction(peer_id, faction_id):
+		return false
+	for from_hex in get_hexes_with_faction_cubes(faction_id):
+		if get_faction_cubes_on_hex(from_hex, faction_id) <= 0:
+			continue
+		for to_hex in get_adjacent_hexes(from_hex):
+			if get_available_cube_space(faction_id, to_hex) > 0:
+				return true
+	return false
+
+
+func _has_valid_king_deploys(peer_id: int, faction_id: int) -> bool:
+	if not player_can_act_with_faction(peer_id, faction_id):
+		return false
+	return not get_hexes_with_deploy_space(faction_id).is_empty()
+
+
+func _has_queen_map_actions(_peer_id: int, faction_id: int) -> bool:
+	for hex_index in range(HexBoard.HEX_COUNT):
+		if get_controlling_faction(hex_index) != faction_id:
+			continue
+		var available_cubes := get_faction_cubes_on_hex(hex_index, faction_id)
+		if available_cubes > 0:
+			for target_hex in get_adjacent_hexes(hex_index):
+				if get_available_cube_space(faction_id, target_hex) > 0:
+					return true
+		for source_hex in get_adjacent_hexes(hex_index):
+			if get_faction_cubes_on_hex(source_hex, faction_id) <= 0:
+				continue
+			if get_available_cube_space(faction_id, hex_index) > 0:
+				return true
+		if hex_index in HexBoard.MOUNTAIN_HEXES and available_cubes > 0:
+			return true
+	return false
+
+
 func get_pending_shop_deploy_faction() -> int:
 	if _pending_shop_action.is_empty():
 		return -1
 
+	var card_faction := int(_pending_shop_action.get("faction_id", -1))
 	var deploy_faction := int(_pending_shop_action.get("deploy_faction_id", -1))
+	if card_faction == Factions.Id.SPADES:
+		if deploy_faction in Factions.ALL:
+			return deploy_faction
+		return -1
+
 	if deploy_faction in Factions.ALL:
 		return deploy_faction
-
-	var card_faction := int(_pending_shop_action.get("faction_id", -1))
 	if card_faction in Factions.ALL:
 		return card_faction
 	return -1
@@ -440,7 +613,8 @@ func pending_shop_needs_faction_choice() -> bool:
 		return false
 	if int(_pending_shop_action.get("faction_id", -1)) != Factions.Id.SPADES:
 		return false
-	return int(_pending_shop_action.get("deploy_faction_id", -1)) < 0
+	var deploy_faction := int(_pending_shop_action.get("deploy_faction_id", -1))
+	return deploy_faction not in Factions.ALL
 
 
 func get_pending_shop_effect() -> String:
@@ -568,24 +742,31 @@ func _update_offline_active_player() -> void:
 	if not offline_debug_mode:
 		return
 
+	var target_peer := _offline_turn_peer()
+	if target_peer == 0:
+		return
+	if is_ai_peer(target_peer):
+		AiController.request_turn()
+		return
+
+	set_active_control_peer(target_peer)
+
+
+func _offline_turn_peer() -> int:
 	match current_phase:
 		Phase.DISCARD_TO_CRIB:
 			for peer_id in active_player_order:
 				if not bool(discard_ready.get(int(peer_id), false)):
-					set_active_control_peer(int(peer_id))
-					return
+					return int(peer_id)
 		Phase.SETUP_MINI_CRIB:
-			if crib_resolver_peer_id != 0:
-				set_active_control_peer(crib_resolver_peer_id)
+			return crib_resolver_peer_id
 		Phase.PEGGING:
-			if pegging_turn_peer != 0:
-				set_active_control_peer(pegging_turn_peer)
+			return pegging_turn_peer
 		Phase.SPEND_ACTIONS:
-			if action_turn_peer_id != 0:
-				set_active_control_peer(action_turn_peer_id)
+			return action_turn_peer_id
 		Phase.RESOLVE_CRIB:
-			if crib_resolver_peer_id != 0:
-				set_active_control_peer(crib_resolver_peer_id)
+			return crib_resolver_peer_id
+	return 0
 
 
 func register_player(peer_id: int, player_name: String = "") -> void:
@@ -818,7 +999,11 @@ func request_pegging_pass() -> void:
 		_broadcast_pegging_state()
 		return
 
-	if not pegging_sequence.is_empty() and pegging_last_play_peer != 0:
+	if (
+		not pegging_sequence.is_empty()
+		and pegging_last_play_peer != 0
+		and _count_players_with_cards() >= 2
+	):
 		grant_pegging_coins(pegging_last_play_peer, "go")
 
 	pegging_sequence.clear()
@@ -872,40 +1057,27 @@ func _apply_pegging_score(peer_id: int, event_type: String, points: int) -> void
 func request_shop_slot_purchase(slot_index: int) -> void:
 	if not multiplayer.is_server():
 		return
-	if current_phase != Phase.SPEND_ACTIONS:
-		return
 
 	var peer_id := _action_peer_id()
-	if peer_id != action_turn_peer_id:
-		return
-	if _has_pending_shop_action(peer_id):
-		return
-	if slot_index < 0 or slot_index >= Shop.SLOT_COUNT:
+	var block_reason := get_shop_slot_block_reason(peer_id, slot_index)
+	if not block_reason.is_empty():
+		_broadcast_message(block_reason)
 		return
 
 	var slot: Dictionary = _shop_slot(slot_index)
-	if slot.is_empty() or _shop_slot_card(slot).is_empty():
-		return
-
 	var cost := int(slot.get("cost", Shop.slot_cost(slot_index)))
 	var coins := int(player_coins.get(peer_id, 0))
-	if coins < cost:
-		return
-
 	var card: Dictionary = _shop_slot_card(slot).duplicate(true)
 	var faction_id := _shop_card_faction_id(card)
-	if faction_id < 0:
-		return
-
 	var effect := Shop.card_effect(card)
-	if not can_purchase_shop_card(card):
-		return
 
 	_record_action_undo_snapshot(peer_id)
 
 	player_coins[peer_id] = coins - cost
 	slot["card"] = {}
-	var deploy_faction_id := faction_id if faction_id in Factions.ALL else -1
+	var deploy_faction_id := -1
+	if faction_id in Factions.ALL:
+		deploy_faction_id = faction_id
 	_pending_shop_action = {
 		"peer_id": peer_id,
 		"faction_id": faction_id,
@@ -1066,7 +1238,7 @@ func _begin_action_phase() -> void:
 	for peer_id in active_player_order:
 		action_players_finished[int(peer_id)] = false
 
-	action_turn_peer_id = int(active_player_order[0])
+	action_turn_peer_id = _first_action_peer()
 	_clear_action_undo_stack()
 	_clear_pending_shop_action()
 	_set_phase(Phase.SPEND_ACTIONS)
@@ -2013,6 +2185,14 @@ func _all_hands_empty() -> bool:
 	return true
 
 
+func _count_players_with_cards() -> int:
+	var count := 0
+	for peer_id in active_player_order:
+		if not hands.get(int(peer_id), []).is_empty():
+			count += 1
+	return count
+
+
 func _validate_card_indices(hand: Array, indices: Array) -> bool:
 	var used: Dictionary = {}
 	for index in indices:
@@ -2042,6 +2222,16 @@ func _non_dealer_peer() -> int:
 		if int(peer_id) != dealer_peer_id:
 			return int(peer_id)
 	return int(active_player_order[0])
+
+
+func _first_action_peer() -> int:
+	var peers: Array = active_player_order.duplicate()
+	if peers.is_empty():
+		return 0
+	var crib_index := peers.find(crib_owner_peer_id)
+	if crib_index < 0:
+		return int(peers[0])
+	return int(peers[(crib_index + 1) % peers.size()])
 
 
 func _sorted_peer_ids() -> Array:

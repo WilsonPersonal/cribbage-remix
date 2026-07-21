@@ -31,6 +31,16 @@ const CART_GOALS := {
 	7: 1,
 }
 
+## Fixed routes from each mountain spawn to its goal forest. Carts must follow these hexes in order.
+## Hex 7 (labels 1, 10): 7 -> 5 (label 7) -> 4 (label 4) -> forest 1
+## Hex 0 (labels 3, 8): 0 -> 2 -> 5 -> forest 3
+## Hex 6 (labels 2, 9): 6 -> 4 -> 2 -> forest 8
+const CART_PATHS := {
+	0: [0, 2, 5, 3],
+	6: [6, 4, 2, 8],
+	7: [7, 5, 4, 1],
+}
+
 const BRIDGE_PAIRS := [
 	[0, 1],
 	[7, 8],
@@ -259,6 +269,30 @@ func _cart_goal_for_origin(origin_hex: int) -> int:
 	return int(CART_GOALS.get(origin_hex, -1))
 
 
+static func cart_path_for_origin(origin_hex: int) -> Array:
+	var path: Array = CART_PATHS.get(origin_hex, [])
+	var copy: Array = []
+	for hex_index in path:
+		copy.append(int(hex_index))
+	return copy
+
+
+static func next_cart_path_hex(origin_hex: int, current_hex: int) -> int:
+	var path: Array = cart_path_for_origin(origin_hex)
+	var index := path.find(current_hex)
+	if index < 0 or index + 1 >= path.size():
+		return -1
+	return int(path[index + 1])
+
+
+static func cart_path_steps_to_goal(origin_hex: int, current_hex: int) -> int:
+	var path: Array = cart_path_for_origin(origin_hex)
+	var index := path.find(current_hex)
+	if index < 0:
+		return 999
+	return path.size() - 1 - index
+
+
 func faction_has_cart_heading_to(faction: int, hex_index: int, goal_hex: int) -> bool:
 	if hex_index < 0 or hex_index >= HEX_COUNT or goal_hex < 0:
 		return false
@@ -281,9 +315,7 @@ func cart_can_advance(faction: int, from_hex: int, to_hex: int, origin_hex: int)
 	if faction_has_cart_heading_to(faction, to_hex, goal_hex):
 		return false
 
-	var from_distance := _distance_to_hex(from_hex, goal_hex)
-	var to_distance := _distance_to_hex(to_hex, goal_hex)
-	return to_distance < from_distance
+	return to_hex == next_cart_path_hex(origin_hex, from_hex)
 
 
 func get_faction_power() -> Dictionary:

@@ -7,6 +7,7 @@ extends Control
 @onready var name_input: LineEdit = $Panel/VBox/NameInput
 @onready var status_label: Label = $Panel/VBox/StatusLabel
 @onready var offline_button: Button = $Panel/VBox/OfflineDebugButton
+@onready var vs_ai_button: Button = $Panel/VBox/VsAiButton
 
 const GAME_SCENE := preload("res://scenes/game.tscn")
 
@@ -15,6 +16,7 @@ func _ready() -> void:
 	host_button.pressed.connect(_on_host_pressed)
 	join_button.pressed.connect(_on_join_pressed)
 	offline_button.pressed.connect(_on_offline_pressed)
+	vs_ai_button.pressed.connect(_on_vs_ai_pressed)
 	NetworkManager.server_started.connect(_on_server_started)
 	NetworkManager.connected_to_server.connect(_on_connected_to_server)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
@@ -60,6 +62,14 @@ func _on_connection_failed() -> void:
 
 func _on_offline_pressed() -> void:
 	status_label.text = "Starting offline debug session..."
+	GameState.pending_vs_ai = false
+	NetworkManager.start_offline_debug()
+	_enter_game_offline()
+
+
+func _on_vs_ai_pressed() -> void:
+	status_label.text = "Starting game vs AI..."
+	GameState.pending_vs_ai = true
 	NetworkManager.start_offline_debug()
 	_enter_game_offline()
 

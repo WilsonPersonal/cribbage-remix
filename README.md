@@ -42,7 +42,7 @@ Each action costs **1** general action or **1 matching faction token**:
 | **Pull** | Bring cubes **and** carts (if forward) from adjacent hex to this hex |
 | **Create Cart** | Turn 1 cube into a cart (west hexes only) |
 
-**Carts** only move **toward the east** (progress cannot be undone). Carts score when they reach east hexes.
+**Carts** follow a fixed route from each mountain hex to its goal forest and may not leave that path. For example, a cart from the mountain labeled 1/10 must travel through hex 7, then hex 4, before reaching its forest. Carts score when they reach the goal forest.
 
 ## Crib resolution
 

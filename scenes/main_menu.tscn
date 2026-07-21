@@ -72,6 +72,10 @@ text = "Join Game"
 layout_mode = 2
 text = "Offline Debug (2 players, 1 window)"
 
+[node name="VsAiButton" type="Button" parent="Panel/VBox"]
+layout_mode = 2
+text = "Play vs AI"
+
 [node name="StatusLabel" type="Label" parent="Panel/VBox"]
 layout_mode = 2
 text = "Host a game or join a friend."

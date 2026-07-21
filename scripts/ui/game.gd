@@ -4,7 +4,7 @@ const HUD_WIDTH_RATIO := 0.28
 const MAIN_WIDTH_RATIO := 0.72
 const SHOP_PANEL_WIDTH_RATIO := MAIN_WIDTH_RATIO / 3.0
 const CARD_PANEL_HEIGHT := 200
-const SHOP_PANEL_HEIGHT := 152
+const SHOP_PANEL_HEIGHT := 184
 const CUBE_MOVE_SPIN_MAX := 5
 const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 
@@ -53,6 +53,7 @@ const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 var _selected_action_type: int = -1
 var _selected_source_hex: int = -1
 var _shop_jack_source_hex: int = -1
+var _pegging_popup_count: int = 0
 
 
 func _ready() -> void:
@@ -67,6 +68,7 @@ func _ready() -> void:
 	GameState.game_message.connect(_on_game_message)
 	GameState.active_control_changed.connect(_on_active_control_changed)
 	GameState.pegging_state_updated.connect(_on_pegging_state_updated)
+	GameState.pegging_score_scored.connect(_on_pegging_score_scored)
 	GameState.board_updated.connect(_on_board_updated)
 	GameState.action_turn_updated.connect(_on_action_turn_updated)
 	GameState.action_history_changed.connect(_on_action_history_changed)
@@ -105,13 +107,20 @@ func _ready() -> void:
 	cart_button.pressed.connect(_on_cart_pressed)
 	undo_action_button.pressed.connect(_on_undo_action_pressed)
 	clear_action_button.pressed.connect(_on_clear_action_pressed)
+	move_cart_check.toggled.connect(_on_move_cart_toggled)
 	clubs_faction_button.pressed.connect(func() -> void: _on_shop_faction_picked(Factions.Id.CLUBS))
 	hearts_faction_button.pressed.connect(func() -> void: _on_shop_faction_picked(Factions.Id.HEARTS))
 	diamonds_faction_button.pressed.connect(func() -> void: _on_shop_faction_picked(Factions.Id.DIAMONDS))
 
 	if NetworkManager.is_offline_debug():
 		offline_bar.visible = true
-		GameState.setup_offline_session("Player 1", "Player 2")
+		if GameState.pending_vs_ai:
+			GameState.pending_vs_ai = false
+			GameState.setup_offline_vs_ai("You", "AI")
+			switch_player_button.visible = false
+			control_peer_label.text = "Playing vs AI"
+		else:
+			GameState.setup_offline_session("Player 1", "Player 2")
 		call_deferred("_auto_start_offline_round")
 	else:
 		offline_bar.visible = false
@@ -137,7 +146,7 @@ func _apply_panel_style(panel: PanelContainer) -> void:
 	style.expand_margin_right = 0
 	style.expand_margin_bottom = 0
 	panel.add_theme_stylebox_override("panel", style)
-	panel.clip_contents = true
+	panel.clip_contents = panel != shop_panel
 
 
 func _apply_hud_content_width() -> void:
@@ -172,7 +181,10 @@ func _apply_layout() -> void:
 	shop_panel.offset_top = 0.0
 	shop_panel.offset_right = 0.0
 	shop_panel.offset_bottom = shop_height
-	shop_panel.z_index = 2
+	shop_panel.z_as_relative = false
+	shop_panel.z_index = 20
+	shop_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	move_child(shop_panel, get_child_count() - 1)
 
 	hud.set_anchors_preset(Control.PRESET_TOP_RIGHT, true)
 	hud.anchor_left = main_right
@@ -208,6 +220,10 @@ func _apply_layout() -> void:
 	card_panel.z_index = 1
 
 	influence_display.refresh()
+
+
+func get_shop_panel_global_rect() -> Rect2:
+	return shop_panel.get_global_rect()
 
 
 func _on_action_history_changed(can_undo: bool) -> void:
@@ -540,6 +556,49 @@ func _on_pegging_state_updated(_sequence: Array, total: int, turn_peer: int) -> 
 	_update_pegging_hud(total, turn_peer)
 
 
+func _on_pegging_score_scored(peer_id: int, event_type: String, points: int) -> void:
+	var score_name := CribbageScoring.pegging_event_label(event_type)
+	_show_pegging_score_popup(peer_id, "%s: +%d" % [score_name, points])
+
+
+func _show_pegging_score_popup(peer_id: int, text: String) -> void:
+	var coin_rect: Rect2 = shop_panel.get_coin_display_rect_for_peer(peer_id)
+	var popup := Label.new()
+	popup.text = text
+	popup.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	popup.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	popup.autowrap_mode = TextServer.AUTOWRAP_OFF
+	popup.add_theme_font_size_override("font_size", 22)
+	popup.add_theme_color_override("font_color", Color(1.0, 0.94, 0.55))
+	popup.modulate.a = 0.0
+	popup.custom_minimum_size.x = maxf(coin_rect.size.x, 96.0)
+	popup.size.x = popup.custom_minimum_size.x
+	popup.size.y = 24.0
+	popup.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	var stack_offset := float(_pegging_popup_count * 26)
+	popup.position = Vector2(
+		coin_rect.position.x + (coin_rect.size.x - popup.size.x) * 0.5,
+		coin_rect.position.y + coin_rect.size.y + 4.0 + stack_offset
+	)
+	popup.z_index = 25
+	add_child(popup)
+	_pegging_popup_count += 1
+
+	var start_y := popup.position.y
+	var tween := popup.create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(popup, "modulate:a", 1.0, 0.12)
+	tween.tween_property(popup, "position:y", start_y - 18.0, 0.85).set_trans(Tween.TRANS_SINE).set_ease(
+		Tween.EASE_OUT
+	)
+	tween.set_parallel(false)
+	tween.tween_property(popup, "modulate:a", 0.0, 0.25).set_delay(0.45)
+	tween.tween_callback(func() -> void:
+		popup.queue_free()
+		_pegging_popup_count = maxi(0, _pegging_popup_count - 1)
+	)
+
+
 func _on_phase_changed(_phase: GameState.Phase) -> void:
 	var in_actions := GameState.current_phase == GameState.Phase.SPEND_ACTIONS
 	end_shop_button.visible = false
@@ -745,9 +804,21 @@ func _try_push(hex_index: int, peer_id: int) -> void:
 				faction_id
 			)
 			return
+		if move_cart_check.button_pressed and not _hex_has_movable_cart(
+			hex_index,
+			faction_id,
+			ActionSystem.Type.PUSH
+		):
+			action_help_label.text = "No cart here can advance along its path."
+			return
 
 		_selected_source_hex = hex_index
-		action_help_label.text = "Push %s: click an adjacent hex." % Factions.name_for(faction_id)
+		if move_cart_check.button_pressed:
+			action_help_label.text = "Push %s + cart: click the next hex on the highlighted path." % Factions.name_for(
+				faction_id
+			)
+		else:
+			action_help_label.text = "Push %s: click an adjacent hex." % Factions.name_for(faction_id)
 		_update_action_highlights()
 		return
 
@@ -790,9 +861,24 @@ func _try_pull(hex_index: int, peer_id: int) -> void:
 		if not GameState.player_can_afford_action(peer_id, faction_id):
 			action_help_label.text = _action_blocked_message(peer_id, faction_id)
 			return
+		if move_cart_check.button_pressed and not _hex_has_movable_cart(
+			hex_index,
+			faction_id,
+			ActionSystem.Type.PULL
+		):
+			action_help_label.text = "No adjacent cart can advance along its path to this hex."
+			return
 
 		_selected_source_hex = hex_index
-		action_help_label.text = "Pull %s: click an adjacent hex to pull from." % Factions.name_for(faction_id)
+		if move_cart_check.button_pressed:
+			action_help_label.text = (
+				"Pull %s + cart: click the hex on the highlighted path to pull from."
+				% Factions.name_for(faction_id)
+			)
+		else:
+			action_help_label.text = "Pull %s: click an adjacent hex to pull from." % Factions.name_for(
+				faction_id
+			)
 		_update_action_highlights()
 		return
 
@@ -863,8 +949,71 @@ func _update_action_highlights() -> void:
 		board.clear_action_selection()
 		return
 
-	var targets: Array = GameState.get_adjacent_hexes(_selected_source_hex)
+	var targets: Array
+	if move_cart_check.button_pressed:
+		targets = _cart_path_highlight_hexes()
+	else:
+		targets = GameState.get_adjacent_hexes(_selected_source_hex)
 	board.set_action_selection(_selected_source_hex, targets)
+
+
+func _on_move_cart_toggled(_pressed: bool) -> void:
+	_update_action_highlights()
+
+
+func _cart_path_highlight_hexes() -> Array:
+	var faction_id := GameState.get_controlling_faction(_selected_source_hex)
+	if faction_id < 0:
+		return []
+
+	var board := HexBoard.new()
+	board.load_state(GameState.get_board_state())
+	var highlighted: Array = []
+
+	match _selected_action_type:
+		ActionSystem.Type.PUSH:
+			for target_hex in GameState.get_adjacent_hexes(_selected_source_hex):
+				for origin_hex in board.hexes[_selected_source_hex]["carts"].get(faction_id, []):
+					if board.cart_can_advance(
+						faction_id,
+						_selected_source_hex,
+						target_hex,
+						int(origin_hex)
+					):
+						if target_hex not in highlighted:
+							highlighted.append(target_hex)
+						break
+		ActionSystem.Type.PULL:
+			for source_hex in GameState.get_adjacent_hexes(_selected_source_hex):
+				for origin_hex in board.hexes[source_hex]["carts"].get(faction_id, []):
+					if board.cart_can_advance(
+						faction_id,
+						source_hex,
+						_selected_source_hex,
+						int(origin_hex)
+					):
+						if source_hex not in highlighted:
+							highlighted.append(source_hex)
+
+	return highlighted
+
+
+func _hex_has_movable_cart(hex_index: int, faction_id: int, action_type: int) -> bool:
+	var board := HexBoard.new()
+	board.load_state(GameState.get_board_state())
+
+	match action_type:
+		ActionSystem.Type.PUSH:
+			for target_hex in GameState.get_adjacent_hexes(hex_index):
+				for origin_hex in board.hexes[hex_index]["carts"].get(faction_id, []):
+					if board.cart_can_advance(faction_id, hex_index, target_hex, int(origin_hex)):
+						return true
+		ActionSystem.Type.PULL:
+			for source_hex in GameState.get_adjacent_hexes(hex_index):
+				for origin_hex in board.hexes[source_hex]["carts"].get(faction_id, []):
+					if board.cart_can_advance(faction_id, source_hex, hex_index, int(origin_hex)):
+						return true
+	return false
 
 
 func _update_shop_dominance_highlights() -> void:
@@ -1163,6 +1312,7 @@ func _update_pegging_hud(total: int, turn_peer: int) -> void:
 	pegging_turn_label.visible = in_pegging
 
 	if not in_pegging:
+		_pegging_popup_count = 0
 		return
 
 	pegging_count_label.text = "Count: %d / %d" % [total, PeggingRules.MAX_TOTAL]

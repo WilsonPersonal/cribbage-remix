@@ -223,7 +223,23 @@ func clear_shop_dominance_highlights() -> void:
 	queue_redraw()
 
 
+func _is_point_over_shop(local_point: Vector2) -> bool:
+	var game := get_parent()
+	if game == null or not game.has_method("get_shop_panel_global_rect"):
+		return false
+	var global_point := get_global_transform() * local_point
+	return game.get_shop_panel_global_rect().has_point(global_point)
+
+
+func _has_point(point: Vector2) -> bool:
+	if _is_point_over_shop(point):
+		return false
+	return Rect2(Vector2.ZERO, size).has_point(point)
+
+
 func _gui_input(event: InputEvent) -> void:
+	if _is_point_over_shop(get_local_mouse_position()):
+		return
 	if GameState.current_phase in [
 		GameState.Phase.SETUP_MINI_CRIB,
 		GameState.Phase.RESOLVE_CRIB,
@@ -700,6 +716,7 @@ func _draw_carts(centers: Array) -> void:
 				continue
 
 			var arrow := _cart_arrow_geometry(
+				hex_index,
 				center,
 				centers,
 				origin_hex,
@@ -747,6 +764,7 @@ func _cart_lane_offset(total_carts: int, global_index: int) -> float:
 
 
 func _cart_arrow_geometry(
+	current_hex: int,
 	hex_center: Vector2,
 	centers: Array,
 	origin_hex: int,
@@ -757,8 +775,12 @@ func _cart_arrow_geometry(
 	if goal_hex < 0 or goal_hex >= centers.size():
 		return {}
 
-	var goal_center: Vector2 = centers[goal_hex]
-	var toward_goal := (goal_center - hex_center).normalized()
+	var next_hex := HexBoard.next_cart_path_hex(origin_hex, current_hex)
+	if next_hex < 0:
+		next_hex = goal_hex
+
+	var next_center: Vector2 = centers[next_hex]
+	var toward_goal := (next_center - hex_center).normalized()
 	if toward_goal == Vector2.ZERO:
 		return {}
 
@@ -829,6 +851,7 @@ func get_cart_arrow_global_midpoint(
 	var entries: Array = _cart_entries_with_virtual(hex_index, faction_id, origin_hex, include_virtual)
 	var entry_index := _cart_entry_global_index(entries, faction_id, origin_hex)
 	var arrow := _cart_arrow_geometry(
+		hex_index,
 		centers[hex_index],
 		centers,
 		origin_hex,
@@ -852,7 +875,11 @@ func get_cart_arrow_global_direction(hex_index: int, origin_hex: int) -> Vector2
 	if goal_hex < 0 or goal_hex >= centers.size():
 		return Vector2.RIGHT
 
-	var toward_goal: Vector2 = (centers[goal_hex] - centers[hex_index]).normalized()
+	var next_hex := HexBoard.next_cart_path_hex(origin_hex, hex_index)
+	if next_hex < 0:
+		next_hex = goal_hex
+
+	var toward_goal: Vector2 = (centers[next_hex] - centers[hex_index]).normalized()
 	if toward_goal == Vector2.ZERO:
 		return Vector2.RIGHT
 	return toward_goal

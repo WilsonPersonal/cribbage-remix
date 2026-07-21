@@ -104,11 +104,6 @@ layout_mode = 2
 text = "Turn: —"
 horizontal_alignment = 1
 
-[node name="PeggingScoreLayer" type="Control" parent="Margin/RootHBox/ContentVBox/PeggingSection"]
-custom_minimum_size = Vector2(0, 40)
-layout_mode = 2
-mouse_filter = 2
-
 [node name="PeggingContainer" type="HBoxContainer" parent="Margin/RootHBox/ContentVBox/PeggingSection"]
 layout_mode = 2
 theme_override_constants/separation = 4
