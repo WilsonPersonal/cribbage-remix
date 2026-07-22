@@ -1,6 +1,7 @@
 extends Node
 
 const FactionPowerRating := preload("res://scripts/ai/faction_power_rating.gd")
+const PeggingPhase := preload("res://scripts/cribbage/pegging_phase.gd")
 
 enum Phase {
 	WAITING,
@@ -26,7 +27,7 @@ signal coins_updated(coins: Dictionary)
 signal action_points_updated(action_points: Dictionary)
 signal faction_actions_updated(faction_actions: Dictionary)
 signal faction_scores_updated(faction_scores: Dictionary)
-signal winner_decided(peer_id: int, faction_id: int)
+signal winner_decided(peer_id: int, dominant_faction_id: int, tiebreaker_faction_id: int)
 signal local_hand_updated(hand: Array)
 signal cut_card_updated(card: Dictionary)
 signal action_turn_updated(peer_id: int)
@@ -38,6 +39,8 @@ signal action_cart_anim_requested(
 	faction_id: int, from_hex: int, to_hex: int, origin_hex: int
 )
 signal pegging_state_updated(sequence: Array, total: int, turn_peer: int)
+signal pegging_settling_changed(is_settling: bool)
+signal pegging_hand_visibility_changed
 signal pegging_score_scored(peer_id: int, event_type: String, points: int)
 signal pegging_history_updated(log: Array)
 signal faction_score_scored(faction_id: int, points: int, old_rank: int, new_rank: int)
@@ -101,6 +104,8 @@ var pegging_total: int = 0
 var pegging_sequence: Array = []
 var pegging_turn_peer: int = 0
 var pegging_last_play_peer: int = 0
+var _pegging_cards_played: int = 0
+var _pegging_other_passed: bool = false
 var last_pegging_log: Array = []
 var _current_pegging_log: Array = []
 var active_player_order: Array = []
@@ -116,8 +121,135 @@ var shop_slots: Array = []
 var _pending_shop_action: Dictionary = {}
 var _board_setup_complete: bool = false
 var _round_finish_scheduled: bool = false
-const PEGGING_SETTLE_DELAY_SEC := 1.1
+const PEGGING_COUNT_PAUSE_SEC := 1.0
 var _pegging_settling: bool = false
+var _pegging_out_peers: Dictionary = {}
+var _pegging_plays_by_peer: Dictionary = {}
+var _pegging_start_hand_sizes: Dictionary = {}
+var _queen_influence_unlocks: Dictionary = {}
+
+
+func is_pegging_settling() -> bool:
+	return _pegging_settling
+
+
+func is_pegging_finish_settling() -> bool:
+	return (
+		current_phase == Phase.PEGGING
+		and _pegging_settling
+		and pegging_sequence.size() >= PeggingPhase.MAX_CARDS_PLAYED
+	)
+
+
+func should_hide_pegging_hand(_hand: Array) -> bool:
+	return should_hide_pegging_hand_for_peer(int(get_control_peer_id()))
+
+
+func should_hide_pegging_hand_for_peer(peer_id: int) -> bool:
+	if current_phase != Phase.PEGGING:
+		return false
+	peer_id = int(peer_id)
+	if pegging_sequence.size() >= PeggingPhase.MAX_CARDS_PLAYED:
+		return true
+	return has_finished_pegging_cards_for_peer(peer_id)
+
+
+func should_hide_pegging_hand_for_control() -> bool:
+	return should_hide_pegging_hand_for_peer(int(get_control_peer_id()))
+
+
+func _live_pegging_hand(peer_id: int) -> Array:
+	peer_id = int(peer_id)
+	if offline_debug_mode or multiplayer.is_server():
+		return hands.get(peer_id, [])
+	if peer_id == multiplayer.get_unique_id():
+		return local_hand
+	return hands.get(peer_id, [])
+
+
+func _any_opponent_has_pegging_cards(peer_id: int) -> bool:
+	peer_id = int(peer_id)
+	for other_id in active_player_order:
+		var id := int(other_id)
+		if id == peer_id:
+			continue
+		if not _live_pegging_hand(id).is_empty():
+			return true
+	return false
+
+
+func get_pegging_cards_played_for_peer(peer_id: int) -> int:
+	return int(_pegging_plays_by_peer.get(int(peer_id), 0))
+
+
+func get_total_pegging_cards_played() -> int:
+	return _pegging_cards_played
+
+
+func get_pegging_start_hand_size_for_peer(peer_id: int) -> int:
+	return int(_pegging_start_hand_sizes.get(int(peer_id), 0))
+
+
+func has_finished_pegging_cards_for_peer(peer_id: int) -> bool:
+	peer_id = int(peer_id)
+	var start_size := get_pegging_start_hand_size_for_peer(peer_id)
+	if start_size > 0 and get_pegging_cards_played_for_peer(peer_id) >= start_size:
+		return true
+	if bool(_pegging_out_peers.get(peer_id, false)):
+		return true
+	return _live_pegging_hand(peer_id).is_empty() and _any_opponent_has_pegging_cards(peer_id)
+
+
+func reconcile_pegging_hand_state(refresh_view: bool = true) -> void:
+	if current_phase != Phase.PEGGING:
+		return
+
+	var changed := false
+	for peer_id in active_player_order:
+		var id := int(peer_id)
+		var start_size := get_pegging_start_hand_size_for_peer(id)
+		var played := get_pegging_cards_played_for_peer(id)
+		var finished_by_plays := start_size > 0 and played >= start_size
+		var finished_by_empty: bool = (
+			hands.get(id, [] as Array).is_empty()
+			and _any_opponent_has_pegging_cards(id)
+		)
+		if not (finished_by_plays or finished_by_empty):
+			continue
+		if not bool(_pegging_out_peers.get(id, false)):
+			_pegging_out_peers[id] = true
+			changed = true
+		if not hands.get(id, []).is_empty():
+			hands[id] = []
+			changed = true
+
+	if refresh_view and not is_ai_search_silence():
+		_refresh_pegging_hand_view()
+		if changed:
+			pegging_hand_visibility_changed.emit()
+
+
+func is_pegging_out(peer_id: int) -> bool:
+	peer_id = int(peer_id)
+	if bool(_pegging_out_peers.get(peer_id, false)):
+		return true
+	var start_size := int(_pegging_start_hand_sizes.get(peer_id, 0))
+	if start_size <= 0:
+		return hands.get(peer_id, []).is_empty()
+	return int(_pegging_plays_by_peer.get(peer_id, 0)) >= start_size
+
+
+func get_pegging_hand_for_control() -> Array:
+	var peer_id := int(get_control_peer_id())
+	if should_hide_pegging_hand_for_peer(peer_id):
+		return []
+	if offline_debug_mode or multiplayer.is_server():
+		return get_hand_for_peer(peer_id)
+	return local_hand.duplicate(true)
+
+
+func should_hide_show_hand() -> bool:
+	return current_phase in [Phase.PEGGING, Phase.SHOW_HANDS] or is_pegging_settling()
 
 
 func setup_offline_session(player_one_name: String = "Player 1", player_two_name: String = "Player 2") -> void:
@@ -184,6 +316,8 @@ func push_ai_search_silence() -> void:
 
 func pop_ai_search_silence() -> void:
 	_ai_search_silence = maxi(0, _ai_search_silence - 1)
+	if _ai_search_silence == 0:
+		reconcile_pegging_hand_state()
 
 
 func is_ai_search_silence() -> bool:
@@ -270,7 +404,10 @@ func set_active_control_peer(peer_id: int) -> void:
 		return
 
 	active_control_peer_id = peer_id
-	local_hand = hands.get(peer_id, []).duplicate(true)
+	var hand: Array = hands.get(peer_id, []).duplicate(true)
+	if current_phase == Phase.PEGGING and should_hide_pegging_hand_for_peer(peer_id):
+		hand = []
+	local_hand = hand
 	local_hand_updated.emit(local_hand)
 	active_control_changed.emit(peer_id)
 
@@ -510,10 +647,6 @@ func can_buy_shop_slot(peer_id: int, slot_index: int) -> bool:
 func get_shop_slot_block_reason(peer_id: int, slot_index: int) -> String:
 	if current_phase != Phase.SPEND_ACTIONS:
 		return "Shop purchases are only available during the action phase."
-	if not is_action_turn_for_control():
-		return "Wait for your action turn to buy from the shop."
-	if int(peer_id) != int(get_control_peer_id()):
-		return "Shop purchases are only available for the active player."
 	if int(peer_id) != int(action_turn_peer_id):
 		return "Shop purchases are only allowed on your action turn."
 	if _has_pending_shop_action(peer_id):
@@ -602,6 +735,8 @@ func player_can_act_with_faction(peer_id: int, faction_id: int) -> bool:
 	if faction_id not in Factions.ALL:
 		return true
 	if _has_jack_shop_bypass(peer_id, faction_id):
+		return true
+	if _has_queen_influence_unlock(peer_id, faction_id):
 		return true
 	return not is_faction_influence_locked(peer_id, faction_id)
 
@@ -923,6 +1058,8 @@ func start_new_round() -> void:
 	pegging_sequence.clear()
 	pegging_turn_peer = 0
 	pegging_last_play_peer = 0
+	_pegging_cards_played = 0
+	_pegging_other_passed = false
 	discard_ready.clear()
 	crib_owner_peer_id = 0
 	show_hands.clear()
@@ -1003,8 +1140,10 @@ func request_pegging_play(hand_index: int) -> void:
 	if _pegging_settling:
 		return
 
-	var peer_id := _action_peer_id()
-	if peer_id != pegging_turn_peer:
+	var peer_id := int(_action_peer_id())
+	if peer_id != int(pegging_turn_peer):
+		return
+	if _pegging_cards_played >= PeggingPhase.MAX_CARDS_PLAYED:
 		return
 
 	var hand: Array = hands.get(peer_id, [])
@@ -1017,10 +1156,11 @@ func request_pegging_play(hand_index: int) -> void:
 
 	hand.remove_at(hand_index)
 	hands[peer_id] = hand
+	_sync_pegging_out_peers_from_hands()
 	pegging_sequence.append(card)
 	pegging_total += int(card.get("value", 0))
 	pegging_last_play_peer = peer_id
-	var played_to_thirty_one := pegging_total == PeggingRules.MAX_TOTAL
+	_pegging_cards_played += 1
 
 	var play_coins := 0
 	var play_events: Array = []
@@ -1029,29 +1169,30 @@ func request_pegging_play(hand_index: int) -> void:
 		play_events.append(event)
 		grant_pegging_coins(peer_id, event)
 
+	if _pegging_cards_played == PeggingPhase.MAX_CARDS_PLAYED:
+		play_coins += CribbageScoring.pegging_event_coins("last_card")
+		play_events.append("last_card")
+		grant_pegging_coins(peer_id, "last_card")
+
 	_log_pegging_card_play(peer_id, card, play_coins, play_events, pegging_total)
+	_note_pegging_play(peer_id)
+
+	var played_to_thirty_one := pegging_total == PeggingRules.MAX_TOTAL
+	var played_last_card := _pegging_cards_played == PeggingPhase.MAX_CARDS_PLAYED
+
+	if played_last_card or played_to_thirty_one:
+		_broadcast_pegging_state()
+		_schedule_pegging_count_pause(played_last_card)
+		if not played_last_card:
+			_send_local_hand(peer_id, hand)
+		return
 
 	_send_local_hand(peer_id, hand)
 
-	if _all_hands_empty():
-		_broadcast_pegging_state(pegging_total)
-		if not played_to_thirty_one:
-			grant_pegging_coins(peer_id, "last_card")
-			_add_coins_to_last_pegging_log_entry(
-				CribbageScoring.pegging_event_coins("last_card"),
-				"last_card"
-			)
-		_schedule_finish_pegging()
-		return
+	if not _pegging_other_passed:
+		pegging_turn_peer = PeggingPhase.opponent_peer(peer_id, active_player_order)
 
-	if played_to_thirty_one:
-		_broadcast_pegging_state(pegging_total)
-		pegging_total = 0
-		pegging_sequence.clear()
-	else:
-		_broadcast_pegging_state()
-
-	_advance_pegging_turn()
+	_after_pegging_action()
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -1063,24 +1204,18 @@ func request_pegging_pass() -> void:
 	if _pegging_settling:
 		return
 
-	var peer_id := _action_peer_id()
-	if peer_id != pegging_turn_peer:
+	var peer_id := int(_action_peer_id())
+	if peer_id != int(pegging_turn_peer):
+		return
+	if _pegging_cards_played >= PeggingPhase.MAX_CARDS_PLAYED:
 		return
 
 	var hand: Array = hands.get(peer_id, [])
-	if PeggingRules.has_any_play(hand, pegging_total):
+	if not hand.is_empty() and PeggingRules.has_any_play(hand, pegging_total):
 		return
 
-	var forced_peer := _peer_who_must_play_after_pass(peer_id)
-	if forced_peer >= 0:
-		pegging_turn_peer = forced_peer
-		_broadcast_pegging_state()
-		return
-
-	if _try_award_pegging_go():
-		_broadcast_pegging_state()
-		_schedule_pegging_settle(_continue_after_pegging_go)
-		return
+	_apply_pegging_pass(peer_id)
+	_after_pegging_action()
 
 
 func grant_actions_from_cards(peer_id: int, cards: Array, cut_card_for_scoring: Dictionary = {}) -> void:
@@ -1143,6 +1278,11 @@ func request_shop_slot_purchase(slot_index: int) -> void:
 	var peer_id := _action_peer_id()
 	var block_reason := get_shop_slot_block_reason(peer_id, slot_index)
 	if not block_reason.is_empty():
+		if AiController.is_ai_peer(peer_id) and not is_ai_search_silence():
+			print(
+				"[AI Shop] Purchase blocked | peer=%d slot=%d coins=%d reason=%s"
+				% [peer_id, slot_index, int(player_coins.get(peer_id, 0)), block_reason]
+			)
 		_broadcast_message(block_reason)
 		return
 
@@ -1160,14 +1300,11 @@ func request_shop_slot_purchase(slot_index: int) -> void:
 
 	match effect:
 		Shop.EFFECT_QUEEN:
-			action_points[peer_id] = (
-				action_points.get(peer_id, 0) + Shop.QUEEN_ACTION_GRANT * ActionSystem.ACTION_COST
-			)
-			_apply_action_points(action_points)
-			_sync_action_points.rpc(action_points)
-		_:
+			_grant_queen_shop_actions(peer_id, faction_id)
+			_clear_pending_shop_action()
+		Shop.EFFECT_JACK, Shop.EFFECT_KING:
 			var deploy_faction_id := -1
-			if faction_id in Factions.ALL:
+			if faction_id in Factions.ALL and faction_id != Factions.Id.SPADES:
 				deploy_faction_id = faction_id
 			_pending_shop_action = {
 				"peer_id": peer_id,
@@ -1183,6 +1320,17 @@ func request_shop_slot_purchase(slot_index: int) -> void:
 	_broadcast_coins()
 	_broadcast_shop_state()
 	_emit_undo_availability()
+
+	if AiController.is_ai_peer(peer_id) and not is_ai_search_silence():
+		print(
+			"[AI Shop] Purchased slot=%d for %d coins (%s %s)"
+			% [
+				slot_index,
+				cost,
+				effect,
+				Factions.name_for(faction_id) if faction_id in Factions.ALL else "—",
+			]
+		)
 
 	var player_name: String = player_names.get(peer_id, "Player %d" % peer_id)
 	var card_label := CribbageDeck.card_label(card)
@@ -1210,10 +1358,22 @@ func request_shop_slot_purchase(slot_index: int) -> void:
 					% [player_name, card_label, cost, Factions.name_for(faction_id)]
 				)
 		Shop.EFFECT_QUEEN:
-			_broadcast_message(
-				"%s bought %s for %d coins — gain %d actions."
-				% [player_name, card_label, cost, Shop.QUEEN_ACTION_GRANT]
-			)
+			if faction_id == Factions.Id.SPADES:
+				_broadcast_message(
+					"%s bought %s for %d coins — gain %d wild faction actions."
+					% [player_name, card_label, cost, Shop.QUEEN_ACTION_GRANT]
+				)
+			else:
+				_broadcast_message(
+					"%s bought %s for %d coins — gain %d %s actions."
+					% [
+						player_name,
+						card_label,
+						cost,
+						Shop.QUEEN_ACTION_GRANT,
+						Factions.name_for(faction_id),
+					]
+				)
 		_:
 			var token_name := Factions.name_for(faction_id)
 			_broadcast_message(
@@ -1297,6 +1457,7 @@ func _begin_action_phase() -> void:
 	action_turn_peer_id = _first_action_peer()
 	_clear_action_undo_stack()
 	_clear_pending_shop_action()
+	_queen_influence_unlocks.clear()
 	_set_phase(Phase.SPEND_ACTIONS)
 	_broadcast_action_turn()
 	var player_name: String = player_names.get(
@@ -1513,6 +1674,9 @@ func request_undo_action() -> void:
 	_board.load_state(snapshot.get("board", []))
 	action_points = snapshot.get("action_points", action_points)
 	player_faction_actions = snapshot.get("player_faction_actions", player_faction_actions)
+	_queen_influence_unlocks = _duplicate_queen_influence_unlocks(
+		snapshot.get("queen_influence_unlocks", {})
+	)
 	player_coins = snapshot.get("player_coins", player_coins)
 	shop_slots = snapshot.get("shop_slots", shop_slots)
 	_pending_shop_action = snapshot.get("pending_shop_action", {}).duplicate(true)
@@ -1946,6 +2110,12 @@ func export_debug_snapshot() -> Dictionary:
 		"pegging_sequence": pegging_sequence.duplicate(true),
 		"pegging_turn_peer": pegging_turn_peer,
 		"pegging_last_play_peer": pegging_last_play_peer,
+		"pegging_cards_played": _pegging_cards_played,
+		"pegging_other_passed": _pegging_other_passed,
+		"pegging_settling": _pegging_settling,
+		"pegging_out_peers": _pegging_out_peers.duplicate(),
+		"pegging_plays_by_peer": _pegging_plays_by_peer.duplicate(),
+		"pegging_start_hand_sizes": _pegging_start_hand_sizes.duplicate(),
 		"active_player_order": _normalize_peer_id_array(active_player_order),
 		"discard_ready": discard_ready.duplicate(true),
 		"show_hands": _duplicate_peer_array_dict(show_hands),
@@ -1996,6 +2166,12 @@ func import_debug_snapshot(data: Dictionary, apply_views: bool = true) -> bool:
 	pegging_sequence = _variant_array(data.get("pegging_sequence", []))
 	pegging_turn_peer = int(data.get("pegging_turn_peer", 0))
 	pegging_last_play_peer = int(data.get("pegging_last_play_peer", 0))
+	_pegging_cards_played = int(data.get("pegging_cards_played", 0))
+	_pegging_other_passed = bool(data.get("pegging_other_passed", false))
+	_pegging_settling = bool(data.get("pegging_settling", false))
+	_pegging_out_peers = _normalize_peer_key_dict(data.get("pegging_out_peers", {}))
+	_pegging_plays_by_peer = _normalize_peer_key_dict(data.get("pegging_plays_by_peer", {}))
+	_pegging_start_hand_sizes = _normalize_peer_key_dict(data.get("pegging_start_hand_sizes", {}))
 	active_player_order = _normalize_peer_id_array(_variant_array(data.get("active_player_order", [])))
 	discard_ready = _normalize_peer_key_dict(data.get("discard_ready", {}))
 	show_hands = _normalize_peer_array_dict(data.get("show_hands", {}))
@@ -2009,7 +2185,9 @@ func import_debug_snapshot(data: Dictionary, apply_views: bool = true) -> bool:
 
 	var board_state := _variant_array(data.get("board_state", []))
 	_board.load_state(board_state)
-	if apply_views:
+	if not apply_views:
+		reconcile_pegging_hand_state(false)
+	elif apply_views:
 		_apply_debug_snapshot_views()
 	return true
 
@@ -2088,6 +2266,8 @@ func _apply_debug_snapshot_views() -> void:
 	crib_count_updated.emit(crib.size())
 
 	local_hand = hands.get(active_control_peer_id, []).duplicate(true)
+	if current_phase == Phase.PEGGING and should_hide_pegging_hand_for_peer(active_control_peer_id):
+		local_hand = []
 	local_hand_updated.emit(local_hand)
 
 	match current_phase:
@@ -2116,51 +2296,72 @@ func get_faction_power() -> Dictionary:
 
 
 func get_dominant_faction() -> int:
-	var ratings := FactionPowerRating.compute_all(
-		_board.duplicate_state(),
-		faction_scores.duplicate()
-	)
-	var ranked: Array = Factions.ALL.duplicate()
-	ranked.sort_custom(func(a: int, b: int) -> bool:
-		return _compare_faction_strength(a, b, ratings)
-	)
+	var ranked := get_factions_by_rank()
+	if ranked.is_empty():
+		return Factions.Id.CLUBS
 	return int(ranked[0])
 
 
+func get_winner_details() -> Dictionary:
+	var ranked: Array = get_factions_by_rank()
+	var dominant_faction_id := get_dominant_faction()
+	if ranked.is_empty():
+		return {
+			"peer_id": 0,
+			"dominant_faction_id": dominant_faction_id,
+			"tiebreaker_faction_id": -1,
+		}
+
+	var candidates: Array = _sorted_peer_ids()
+	if candidates.is_empty():
+		for peer_id in player_influence.keys():
+			candidates.append(int(peer_id))
+	if candidates.is_empty():
+		return {
+			"peer_id": 0,
+			"dominant_faction_id": dominant_faction_id,
+			"tiebreaker_faction_id": -1,
+		}
+
+	var had_tie_on_dominant := false
+	for faction_index in range(ranked.size()):
+		var faction_id := int(ranked[faction_index])
+		var best_influence := -1
+		var tied_peers: Array = []
+		for peer_id in candidates:
+			var value := _influence_for_peer(int(peer_id), faction_id)
+			if value > best_influence:
+				best_influence = value
+				tied_peers = [int(peer_id)]
+			elif value == best_influence:
+				tied_peers.append(int(peer_id))
+
+		if tied_peers.size() == 1:
+			return {
+				"peer_id": int(tied_peers[0]),
+				"dominant_faction_id": dominant_faction_id,
+				"tiebreaker_faction_id": int(faction_id) if had_tie_on_dominant else -1,
+			}
+		if faction_index == 0:
+			had_tie_on_dominant = true
+		candidates = tied_peers
+
+	return {
+		"peer_id": int(candidates[0]),
+		"dominant_faction_id": dominant_faction_id,
+		"tiebreaker_faction_id": -1,
+	}
+
+
 func get_winner_peer_id() -> int:
-	var dominant_faction := get_dominant_faction()
-	var best_peer_id := 0
-	var best_influence := -1
-
-	for peer_id in player_influence.keys():
-		var value := RemixRules.faction_dict_value(
-			player_influence.get(peer_id, RemixRules.empty_influence()),
-			dominant_faction
-		)
-		if value > best_influence:
-			best_influence = value
-			best_peer_id = int(peer_id)
-
-	return best_peer_id
+	return int(get_winner_details().get("peer_id", 0))
 
 
-func _compare_faction_strength(a: int, b: int, ratings: Dictionary) -> bool:
-	var power_a := float(ratings.get(a, {}).get("total", 0.0))
-	var power_b := float(ratings.get(b, {}).get("total", 0.0))
-	if absf(power_a - power_b) >= 0.01:
-		return power_a > power_b
-
-	var score_a := int(faction_scores.get(a, 0))
-	var score_b := int(faction_scores.get(b, 0))
-	if score_a != score_b:
-		return score_a > score_b
-
-	var recency_a := int(faction_score_recency.get(a, 0))
-	var recency_b := int(faction_score_recency.get(b, 0))
-	if recency_a != recency_b:
-		return recency_a > recency_b
-
-	return a < b
+func _influence_for_peer(peer_id: int, faction_id: int) -> int:
+	return RemixRules.faction_dict_value(
+		player_influence.get(peer_id, RemixRules.empty_influence()),
+		faction_id
+	)
 
 
 func _deal_cards() -> void:
@@ -2212,21 +2413,27 @@ func _broadcast_cut_card_clear() -> void:
 
 
 func _begin_pegging() -> void:
-	pegging_sequence.clear()
-	pegging_total = 0
-	pegging_last_play_peer = 0
+	_reset_pegging_count()
+	_pegging_cards_played = 0
+	_pegging_other_passed = false
 	_pegging_settling = false
+	_pegging_out_peers.clear()
+	_pegging_plays_by_peer.clear()
+	_pegging_start_hand_sizes.clear()
+	pegging_last_play_peer = 0
 	_current_pegging_log.clear()
 	if multiplayer.is_server():
 		_broadcast_pegging_history(false)
 	pegging_turn_peer = _non_dealer_peer()
 	show_hands.clear()
 	for peer_id in active_player_order:
-		show_hands[peer_id] = hands.get(peer_id, []).duplicate(true)
+		var id := int(peer_id)
+		show_hands[id] = hands.get(id, []).duplicate(true)
+		_pegging_start_hand_sizes[id] = show_hands[id].size()
 	_set_phase(Phase.PEGGING)
 	_broadcast_show_hands()
-	_broadcast_pegging_state()
 	_broadcast_message("Pegging phase: earn coins for pairs, 15s, 31, and go.")
+	_after_pegging_action()
 
 
 func _begin_show_hands() -> void:
@@ -2249,121 +2456,125 @@ func _begin_show_hands() -> void:
 	_begin_action_phase()
 
 
-func _advance_pegging_turn() -> void:
-	if _all_hands_empty():
-		_finish_pegging()
+func _apply_pegging_pass(passing_peer: int) -> void:
+	if _pegging_other_passed:
+		_reset_pegging_count()
+		_pegging_other_passed = false
+		pegging_turn_peer = PeggingPhase.opponent_peer(passing_peer, active_player_order)
+	else:
+		pegging_turn_peer = PeggingPhase.opponent_peer(passing_peer, active_player_order)
+		var passer_hand: Array = hands.get(int(passing_peer), [])
+		if not passer_hand.is_empty():
+			grant_pegging_coins(pegging_turn_peer, "go")
+			_log_pegging_go(pegging_turn_peer)
+		_pegging_other_passed = true
+
+
+func _pegging_must_pass(peer_id: int) -> bool:
+	var hand: Array = hands.get(int(peer_id), [])
+	if hand.is_empty():
+		return true
+	return not PeggingRules.has_any_play(hand, pegging_total)
+
+
+func _schedule_pegging_count_pause(finish_after: bool) -> void:
+	if is_ai_search_silence():
 		return
-
-	var next_peer := _next_player_with_cards(pegging_turn_peer)
-	if next_peer < 0:
-		_finish_pegging()
-		return
-
-	pegging_turn_peer = next_peer
-
-	if _try_award_pegging_go():
-		_broadcast_pegging_state()
-		_schedule_pegging_settle(_continue_after_pegging_go)
-		return
-
-	_broadcast_pegging_state()
-
-
-func _schedule_pegging_settle(callback: Callable) -> void:
 	if _pegging_settling:
 		return
-	_pegging_settling = true
-	get_tree().create_timer(PEGGING_SETTLE_DELAY_SEC).timeout.connect(func() -> void:
-		_pegging_settling = false
-		if current_phase == Phase.PEGGING:
-			callback.call()
+	_set_pegging_settling(true)
+	get_tree().create_timer(PEGGING_COUNT_PAUSE_SEC).timeout.connect(func() -> void:
+		_set_pegging_settling(false)
+		if current_phase != Phase.PEGGING:
+			return
+		if finish_after:
+			_finish_pegging()
+		else:
+			_pegging_other_passed = false
+			_reset_pegging_count()
+			pegging_turn_peer = PeggingPhase.opponent_peer(
+				pegging_last_play_peer,
+				active_player_order
+			)
+			_after_pegging_action()
 	, CONNECT_ONE_SHOT)
 
 
-func _continue_after_pegging_go() -> void:
-	if current_phase != Phase.PEGGING:
-		return
-
-	pegging_sequence.clear()
-	pegging_total = 0
-	if _all_hands_empty():
+func _after_pegging_action() -> void:
+	_sync_pegging_out_peers_from_hands()
+	if _pegging_cards_played >= PeggingPhase.MAX_CARDS_PLAYED or _all_hands_empty():
 		_finish_pegging()
 		return
 
-	pegging_turn_peer = _next_player_with_cards(pegging_last_play_peer)
-	if _all_hands_empty() or pegging_turn_peer < 0:
-		_finish_pegging()
-		return
+	var safety := 0
+	while safety < active_player_order.size() + 1:
+		safety += 1
+		if not _pegging_must_pass(int(pegging_turn_peer)):
+			break
+		_apply_pegging_pass(int(pegging_turn_peer))
+		if _pegging_cards_played >= PeggingPhase.MAX_CARDS_PLAYED or _all_hands_empty():
+			_finish_pegging()
+			return
 
 	_broadcast_pegging_state()
-
-
-func _schedule_finish_pegging(_delay_seconds: float = -1.0) -> void:
-	_schedule_pegging_settle(_finish_pegging)
 
 
 func _finish_pegging() -> void:
 	if current_phase != Phase.PEGGING:
 		return
 
-	_pegging_settling = false
+	for active_peer_id in active_player_order:
+		_send_local_hand(int(active_peer_id), hands.get(int(active_peer_id), []))
+
 	_finalize_pegging_history()
-	pegging_sequence.clear()
-	pegging_total = 0
+	_reset_pegging_count()
+	_pegging_cards_played = 0
+	_pegging_other_passed = false
+	_set_pegging_settling(false)
 	pegging_turn_peer = 0
 	_broadcast_pegging_state()
 	_begin_show_hands()
 
 
-func _next_player_with_cards(from_peer: int) -> int:
-	var peers: Array = active_player_order.duplicate()
-	var start_index := peers.find(from_peer)
-	if start_index < 0:
-		start_index = 0
-
-	for step in range(1, peers.size() + 1):
-		var candidate: int = peers[(start_index + step) % peers.size()]
-		if not hands.get(candidate, []).is_empty():
-			return candidate
-
-	return -1
-
-
-func _peer_who_must_play_after_pass(passing_peer: int) -> int:
-	for candidate in active_player_order:
-		if int(candidate) == int(passing_peer):
-			continue
-		var other_hand: Array = hands.get(candidate, [])
-		if other_hand.is_empty():
-			continue
-		if PeggingRules.has_any_play(other_hand, pegging_total):
-			return int(candidate)
-	return -1
-
-
-func _pegging_run_is_stuck() -> bool:
-	var player_with_cards := false
+func _sync_pegging_out_peers_from_hands() -> void:
 	for peer_id in active_player_order:
-		var hand: Array = hands.get(int(peer_id), [])
-		if hand.is_empty():
-			continue
-		player_with_cards = true
-		if PeggingRules.has_any_play(hand, pegging_total):
-			return false
-	return player_with_cards
+		var id := int(peer_id)
+		if hands.get(id, []).is_empty():
+			_mark_pegging_out(id)
 
 
-func _try_award_pegging_go() -> bool:
-	if pegging_sequence.is_empty():
-		return false
-	if pegging_last_play_peer <= 0:
-		return false
-	if not _pegging_run_is_stuck():
-		return false
+func _note_pegging_play(peer_id: int) -> void:
+	peer_id = int(peer_id)
+	var played := int(_pegging_plays_by_peer.get(peer_id, 0)) + 1
+	_pegging_plays_by_peer[peer_id] = played
+	var start_size := int(_pegging_start_hand_sizes.get(peer_id, 0))
+	if start_size > 0 and played >= start_size:
+		_mark_pegging_out(peer_id)
 
-	grant_pegging_coins(pegging_last_play_peer, "go")
-	_log_pegging_go(pegging_last_play_peer)
-	return true
+
+func _mark_pegging_out(peer_id: int) -> void:
+	peer_id = int(peer_id)
+	if bool(_pegging_out_peers.get(peer_id, false)):
+		return
+	_pegging_out_peers[peer_id] = true
+	if not is_ai_search_silence():
+		pegging_hand_visibility_changed.emit()
+
+
+func _broadcast_pegging_out_peers() -> void:
+	if is_ai_search_silence():
+		return
+	if multiplayer.is_server():
+		_sync_pegging_out_peers.rpc(
+			_pegging_out_peers.duplicate(),
+			_pegging_plays_by_peer.duplicate(),
+			_pegging_start_hand_sizes.duplicate()
+		)
+
+
+func _reset_pegging_count() -> void:
+	pegging_sequence.clear()
+	pegging_total = 0
 
 
 func _all_players_discarded() -> bool:
@@ -2375,17 +2586,9 @@ func _all_players_discarded() -> bool:
 
 func _all_hands_empty() -> bool:
 	for peer_id in active_player_order:
-		if not hands.get(peer_id, []).is_empty():
+		if not hands.get(int(peer_id), []).is_empty():
 			return false
 	return true
-
-
-func _count_players_with_cards() -> int:
-	var count := 0
-	for peer_id in active_player_order:
-		if not hands.get(int(peer_id), []).is_empty():
-			count += 1
-	return count
 
 
 func _validate_card_indices(hand: Array, indices: Array) -> bool:
@@ -2439,6 +2642,10 @@ func _send_local_hand(peer_id: int, hand: Array) -> void:
 	if is_ai_search_silence():
 		return
 	peer_id = int(peer_id)
+	if current_phase == Phase.PEGGING and should_hide_pegging_hand_for_peer(peer_id):
+		hand = []
+	elif current_phase == Phase.PEGGING and hand.is_empty():
+		_mark_pegging_out(peer_id)
 	if offline_debug_mode:
 		if peer_id == active_control_peer_id:
 			local_hand = hand.duplicate(true)
@@ -2611,6 +2818,35 @@ func _has_jack_shop_bypass(peer_id: int, faction_id: int) -> bool:
 	return _pending_shop_action_matches_faction(faction_id)
 
 
+func _has_queen_influence_unlock(peer_id: int, faction_id: int) -> bool:
+	var unlocks: Dictionary = _queen_influence_unlocks.get(int(peer_id), {})
+	return bool(unlocks.get(faction_id, false))
+
+
+func _set_queen_influence_unlock(peer_id: int, faction_id: int) -> void:
+	peer_id = int(peer_id)
+	if not _queen_influence_unlocks.has(peer_id):
+		_queen_influence_unlocks[peer_id] = {}
+	_queen_influence_unlocks[peer_id][faction_id] = true
+
+
+func _grant_queen_shop_actions(peer_id: int, faction_id: int) -> void:
+	if faction_id not in Factions.SHOP_FACTIONS:
+		return
+
+	var tokens: Dictionary = player_faction_actions.get(peer_id, RemixRules.empty_faction_actions())
+	tokens[faction_id] = RemixRules.faction_dict_value(tokens, faction_id) + Shop.QUEEN_ACTION_GRANT
+	player_faction_actions[peer_id] = RemixRules.normalize_action_tokens(tokens)
+	_broadcast_faction_actions()
+
+	if faction_id == Factions.Id.SPADES:
+		for unlocked_faction in Factions.ALL:
+			if unlocked_faction != Factions.Id.SPADES:
+				_set_queen_influence_unlock(peer_id, unlocked_faction)
+	else:
+		_set_queen_influence_unlock(peer_id, faction_id)
+
+
 func _broadcast_faction_actions() -> void:
 	if is_ai_search_silence():
 		return
@@ -2708,6 +2944,7 @@ func _broadcast_pegging_state(display_total: int = -1) -> void:
 	var total := pegging_total if display_total < 0 else display_total
 	_apply_pegging_state(pegging_sequence, total, pegging_turn_peer)
 	_sync_pegging_state.rpc(pegging_sequence, total, pegging_turn_peer)
+	_broadcast_pegging_out_peers()
 	_update_offline_active_player()
 
 
@@ -2715,7 +2952,35 @@ func _apply_pegging_state(sequence: Array, total: int, turn_peer: int) -> void:
 	pegging_sequence = sequence.duplicate(true)
 	pegging_total = total
 	pegging_turn_peer = turn_peer
+	reconcile_pegging_hand_state(false)
+	_refresh_pegging_hand_view()
 	pegging_state_updated.emit(pegging_sequence, pegging_total, pegging_turn_peer)
+
+
+func _refresh_pegging_hand_view() -> void:
+	if is_ai_search_silence() or current_phase != Phase.PEGGING:
+		return
+	var peer_id := int(get_control_peer_id())
+	if offline_debug_mode or multiplayer.is_server():
+		if should_hide_pegging_hand_for_peer(peer_id):
+			_send_local_hand(peer_id, [])
+		else:
+			_send_local_hand(peer_id, hands.get(peer_id, []))
+	elif peer_id == multiplayer.get_unique_id():
+		if should_hide_pegging_hand_for_peer(peer_id):
+			local_hand = []
+			local_hand_updated.emit(local_hand)
+		if not is_ai_search_silence():
+			pegging_hand_visibility_changed.emit()
+
+
+func _set_pegging_settling(value: bool, broadcast: bool = true) -> void:
+	if _pegging_settling == value:
+		return
+	_pegging_settling = value
+	pegging_settling_changed.emit(value)
+	if broadcast and multiplayer.is_server() and not is_ai_search_silence():
+		_sync_pegging_settling.rpc(value)
 
 
 func _broadcast_action_turn() -> void:
@@ -2905,11 +3170,14 @@ func _refund_multiple_faction_actions(
 
 
 func _record_action_undo_snapshot(peer_id: int) -> void:
+	if is_ai_search_silence():
+		return
 	_action_undo_stack.append({
 		"peer_id": peer_id,
 		"board": _board.duplicate_state(),
 		"action_points": action_points.duplicate(true),
 		"player_faction_actions": _duplicate_player_faction_actions(),
+		"queen_influence_unlocks": _duplicate_queen_influence_unlocks(_queen_influence_unlocks),
 		"player_coins": player_coins.duplicate(true),
 		"shop_slots": _duplicate_shop_slots(),
 		"pending_shop_action": _pending_shop_action.duplicate(true),
@@ -2923,6 +3191,15 @@ func _duplicate_player_faction_actions() -> Dictionary:
 	var copy: Dictionary = {}
 	for peer_id in player_faction_actions.keys():
 		copy[peer_id] = player_faction_actions[peer_id].duplicate(true)
+	return copy
+
+
+func _duplicate_queen_influence_unlocks(source: Dictionary) -> Dictionary:
+	var copy: Dictionary = {}
+	for peer_id in source.keys():
+		var unlocks: Dictionary = source.get(peer_id, {})
+		if typeof(unlocks) == TYPE_DICTIONARY:
+			copy[int(peer_id)] = unlocks.duplicate(true)
 	return copy
 
 
@@ -3084,9 +3361,12 @@ func _begin_next_round_after_finish() -> void:
 
 func _finish_game() -> void:
 	_set_phase(Phase.GAME_OVER)
-	var winner := get_winner_peer_id()
-	winner_decided.emit(winner, get_dominant_faction())
-	_sync_winner.rpc(winner, get_dominant_faction())
+	var winner_details := get_winner_details()
+	var winner := int(winner_details.get("peer_id", 0))
+	var dominant_faction_id := int(winner_details.get("dominant_faction_id", get_dominant_faction()))
+	var tiebreaker_faction_id := int(winner_details.get("tiebreaker_faction_id", -1))
+	winner_decided.emit(winner, dominant_faction_id, tiebreaker_faction_id)
+	_sync_winner.rpc(winner, dominant_faction_id, tiebreaker_faction_id)
 
 
 func _spend_action_points(peer_id: int, cost: int) -> bool:
@@ -3266,12 +3546,15 @@ func _sync_phase(phase: Phase) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
-func _sync_winner(peer_id: int, faction_id: int) -> void:
-	winner_decided.emit(peer_id, faction_id)
+func _sync_winner(peer_id: int, dominant_faction_id: int, tiebreaker_faction_id: int) -> void:
+	winner_decided.emit(peer_id, dominant_faction_id, tiebreaker_faction_id)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _sync_local_hand(hand: Array) -> void:
+	var peer_id := int(multiplayer.get_unique_id())
+	if current_phase == Phase.PEGGING and should_hide_pegging_hand_for_peer(peer_id):
+		hand = []
 	local_hand = hand.duplicate(true)
 	local_hand_updated.emit(local_hand)
 
@@ -3315,6 +3598,29 @@ func _sync_pegging_state(sequence: Array, total: int, turn_peer: int) -> void:
 	if multiplayer.is_server():
 		return
 	_apply_pegging_state(sequence, total, turn_peer)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_pegging_out_peers(
+	out_peers: Dictionary,
+	plays_by_peer: Dictionary,
+	start_hand_sizes: Dictionary
+) -> void:
+	if multiplayer.is_server():
+		return
+	_pegging_out_peers = _normalize_peer_key_dict(out_peers)
+	_pegging_plays_by_peer = _normalize_peer_key_dict(plays_by_peer)
+	_pegging_start_hand_sizes = _normalize_peer_key_dict(start_hand_sizes)
+	if current_phase == Phase.PEGGING:
+		pegging_hand_visibility_changed.emit()
+		pegging_state_updated.emit(pegging_sequence, pegging_total, pegging_turn_peer)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_pegging_settling(is_settling: bool) -> void:
+	if multiplayer.is_server():
+		return
+	_set_pegging_settling(is_settling, false)
 
 
 @rpc("authority", "call_remote", "reliable")

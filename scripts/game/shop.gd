@@ -27,7 +27,9 @@ static func card_effect(card: Dictionary) -> String:
 			return EFFECT_JACK
 		"K":
 			return EFFECT_KING
-		"Q", _:
+		"Q":
+			return EFFECT_QUEEN
+		_:
 			return EFFECT_QUEEN
 
 

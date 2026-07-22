@@ -7,6 +7,7 @@ const PANEL_BORDER_COLOR := Color(0.45, 0.55, 0.72, 0.55)
 const HexBoardMiniView := preload("res://scripts/ui/hex_board_mini_view.gd")
 const PowerRating := preload("res://scripts/ai/faction_power_rating.gd")
 const MoveGenerator := preload("res://scripts/ai/ai_move_generator.gd")
+const ShopEvaluator := preload("res://scripts/ai/ai_shop_evaluator.gd")
 
 @onready var _panel: PanelContainer = $Panel
 @onready var _list_container: VBoxContainer = $Panel/Margin/VBox/Body/ListScroll/ListVBox
@@ -191,6 +192,11 @@ func _format_detail(entry: Dictionary) -> String:
 			var sign := "+" if score >= 0.0 else ""
 			lines.append("  %s%.1f  %s" % [sign, score, str(factor.get("name", ""))])
 
+	if _should_show_shop_card_section(entry):
+		lines.append("")
+		lines.append("Shop card AI power increases:")
+		lines.append(_format_shop_card_evaluations(entry))
+
 	if not alternatives.is_empty():
 		lines.append("")
 		lines.append("Other options considered:")
@@ -211,6 +217,74 @@ func _format_detail(entry: Dictionary) -> String:
 
 func _is_discard_entry(entry: Dictionary) -> bool:
 	return str(entry.get("move", {}).get("kind", "")) == MoveGenerator.KIND_DISCARD
+
+
+func _should_show_shop_card_section(entry: Dictionary) -> bool:
+	return int(entry.get("phase", -1)) == GameState.Phase.SPEND_ACTIONS
+
+
+func _format_shop_card_evaluations(entry: Dictionary) -> String:
+	var evaluations: Array = entry.get("shop_card_evaluations", [])
+	if evaluations.is_empty():
+		return "  (none available — complete pending shop action or no legal purchases)"
+
+	var lines: PackedStringArray = PackedStringArray()
+	for evaluation in evaluations:
+		lines.append("  %s" % _format_shop_card_evaluation_line(entry, evaluation))
+	return "\n".join(lines)
+
+
+func _format_shop_card_evaluation_line(entry: Dictionary, evaluation: Dictionary) -> String:
+	var effect := _shop_effect_label(str(evaluation.get("effect", "")))
+	var faction_id := int(evaluation.get("faction_id", -1))
+	var faction_name := Factions.name_for(faction_id) if faction_id in Factions.ALL else "—"
+	var cost := int(evaluation.get("cost", 0))
+	var delta := float(evaluation.get("delta", 0.0))
+	var threshold := float(evaluation.get("threshold", 0.0))
+	var delta_sign := "+" if delta >= 0.0 else ""
+	var threshold_sign := "+" if threshold >= 0.0 else ""
+	var delta_text := ShopEvaluator.format_shop_power_delta(delta)
+	var worthwhile := is_finite(delta) and delta > threshold
+	var marker := ""
+	if _is_chosen_shop_evaluation(entry, evaluation):
+		marker = " ← chosen"
+	elif worthwhile:
+		marker = " (meets %.0f× cost threshold)" % ShopEvaluator.POWER_COST_MULTIPLIER
+
+	var follow_up_summary := str(evaluation.get("follow_up_summary", ""))
+	var follow_up_note := ""
+	if not follow_up_summary.is_empty():
+		follow_up_note = " | best: %s" % follow_up_summary
+
+	return "%s%s | %d coins | AI power %s%s (needs %s%.1f)%s%s" % [
+		effect,
+		faction_name,
+		cost,
+		delta_sign,
+		delta_text,
+		threshold_sign,
+		threshold,
+		marker,
+		follow_up_note,
+	]
+
+
+func _is_chosen_shop_evaluation(entry: Dictionary, evaluation: Dictionary) -> bool:
+	if str(entry.get("move", {}).get("kind", "")) != MoveGenerator.KIND_SHOP_BUY:
+		return false
+	return int(entry.get("move", {}).get("slot_index", -1)) == int(evaluation.get("slot_index", -2))
+
+
+func _shop_effect_label(effect: String) -> String:
+	match effect:
+		Shop.EFFECT_QUEEN:
+			return "Queen "
+		Shop.EFFECT_JACK:
+			return "Jack "
+		Shop.EFFECT_KING:
+			return "King "
+		_:
+			return "%s " % effect.capitalize()
 
 
 func _format_discard_detail(entry: Dictionary) -> String:

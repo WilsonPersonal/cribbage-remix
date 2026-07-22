@@ -12,6 +12,7 @@ const Search := preload("res://scripts/ai/ai_search.gd")
 const Evaluator := preload("res://scripts/ai/ai_evaluator.gd")
 const ContextBuilder := preload("res://scripts/ai/ai_context.gd")
 const PowerRating := preload("res://scripts/ai/faction_power_rating.gd")
+const ShopEvaluator := preload("res://scripts/ai/ai_shop_evaluator.gd")
 
 var enabled: bool = false
 var ai_peer_ids: Array[int] = []
@@ -121,12 +122,28 @@ func _record_ai_action(peer_id: int, move: Dictionary) -> void:
 		alternatives = _rank_alternative_moves(peer_id, move, context)
 	else:
 		alternatives = _alternatives_from_decision(decision)
+	var shop_card_evaluations: Array = []
+	if (
+		GameState.current_phase == GameState.Phase.SPEND_ACTIONS
+		and kind == MoveGenerator.KIND_SHOP_BUY
+	):
+		shop_card_evaluations = ShopEvaluator.evaluate_all_shop_buy_deltas(peer_id, context)
+	var queen_follow_up_summary := ""
+	if kind == MoveGenerator.KIND_SHOP_BUY:
+		queen_follow_up_summary = str(move.get("_queen_follow_up_summary", ""))
+		if queen_follow_up_summary.is_empty() and not shop_card_evaluations.is_empty():
+			var slot_index := int(move.get("slot_index", -1))
+			for evaluation in shop_card_evaluations:
+				if int(evaluation.get("slot_index", -2)) != slot_index:
+					continue
+				queen_follow_up_summary = str(evaluation.get("follow_up_summary", ""))
+				break
 	var entry := {
 		"id": action_id,
 		"round": GameState.round_number,
 		"phase": GameState.current_phase,
 		"peer_id": peer_id,
-		"summary": format_action_summary(move, action_id),
+		"summary": format_action_summary(move, action_id, queen_follow_up_summary),
 		"description": _describe_move(move),
 		"move": _move_without_decision(move),
 		"explanation": explanation,
@@ -139,6 +156,8 @@ func _record_ai_action(peer_id: int, move: Dictionary) -> void:
 		"power_ratings_after": explanation.get("power_ratings_after", {}),
 		"ai_power_before": explanation.get("ai_power_before", {}),
 		"ai_power_after": explanation.get("ai_power_after", {}),
+		"shop_card_evaluations": shop_card_evaluations,
+		"queen_follow_up_summary": queen_follow_up_summary,
 	}
 	action_history.append(entry)
 	action_logged.emit(entry)
@@ -180,7 +199,11 @@ func _alternatives_from_decision(decision: Dictionary) -> Array:
 	return decision.get("alternatives", []).duplicate(true)
 
 
-func format_action_summary(move: Dictionary, action_id: int = -1) -> String:
+func format_action_summary(
+	move: Dictionary,
+	action_id: int = -1,
+	queen_follow_up_summary: String = ""
+) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	if action_id > 0:
 		parts.append("#%d" % action_id)
@@ -198,6 +221,10 @@ func format_action_summary(move: Dictionary, action_id: int = -1) -> String:
 		MoveGenerator.KIND_SHOP_BUY:
 			parts.append("Shop buy")
 			parts.append(_shop_card_faction_name(move))
+			if queen_follow_up_summary.is_empty():
+				queen_follow_up_summary = str(move.get("_queen_follow_up_summary", ""))
+			if not queen_follow_up_summary.is_empty():
+				parts.append(queen_follow_up_summary)
 		MoveGenerator.KIND_SHOP_DEPLOY_FACTION:
 			parts.append("Deploy")
 			parts.append(Factions.name_for(int(move.get("faction_id", -1))))
@@ -358,8 +385,8 @@ func _append_board_hex(hexes: Array, hex_index: int) -> void:
 		hexes.append(hex_index)
 
 
-func _ai_debug(_text: String) -> void:
-	pass
+func _ai_debug(text: String) -> void:
+	print("[AI] %s" % text)
 
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:
@@ -466,12 +493,14 @@ func _think_and_act() -> void:
 
 
 func _execute_planned_spend_actions_turn(peer_id: int) -> void:
+	var shop_purchased_this_turn := false
 	while _is_ai_spend_actions_turn(peer_id):
 		_ai_debug(
-			"Planning action turn | total actions=%d points=%d"
+			"Planning action turn | total actions=%d points=%d coins=%d"
 			% [
 				GameState.get_total_actions_for_peer(peer_id),
 				GameState.get_action_points_for_peer(peer_id),
+				int(GameState.player_coins.get(peer_id, 0)),
 			]
 		)
 
@@ -481,7 +510,8 @@ func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 			peer_id,
 			_blocked_moves,
 			_stall_signature,
-			_stall_attempts
+			_stall_attempts,
+			shop_purchased_this_turn
 		)
 		_end_thinking()
 		_blocked_moves = plan.get("blocked_moves", {})
@@ -518,6 +548,8 @@ func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 			GameState.run_as_peer(peer_id, func() -> void:
 				_execute_move(move)
 			)
+			if str(move.get("kind", "")) == MoveGenerator.KIND_SHOP_BUY:
+				shop_purchased_this_turn = true
 			var after := _snapshot_action_state(peer_id)
 
 			if not _action_state_changed(before, after):
@@ -592,6 +624,7 @@ func _execute_single_planned_move(peer_id: int) -> void:
 	_begin_thinking(peer_id)
 	await get_tree().process_frame
 	var decision: Dictionary = await TurnPlanner.choose_move(peer_id)
+	GameState.reconcile_pegging_hand_state()
 	_end_thinking()
 	var move: Dictionary = decision.get("move", {})
 	if move.is_empty():
@@ -620,9 +653,24 @@ func _execute_single_planned_move(peer_id: int) -> void:
 			return
 
 	_record_ai_action(peer_id, move)
+	var pegging_hand_before := GameState.get_hand_for_peer(peer_id).size()
 	GameState.run_as_peer(peer_id, func() -> void:
 		_execute_move(move)
 	)
+	GameState.reconcile_pegging_hand_state()
+
+	if (
+		GameState.current_phase == GameState.Phase.PEGGING
+		and GameState.pegging_turn_peer == peer_id
+		and (
+			GameState.is_pegging_settling()
+			or (
+				str(move.get("kind", "")) == MoveGenerator.KIND_PEGGING_PLAY
+				and GameState.get_hand_for_peer(peer_id).size() == pegging_hand_before
+			)
+		)
+	):
+		_schedule_for_peer(peer_id)
 
 
 func _is_ai_spend_actions_turn(peer_id: int) -> bool:
@@ -741,13 +789,16 @@ func _snapshot_action_state(peer_id: int) -> Dictionary:
 	return {
 		"total_actions": GameState.get_total_actions_for_peer(peer_id),
 		"pending_shop": GameState.has_pending_shop_action(peer_id),
+		"coins": int(GameState.player_coins.get(peer_id, 0)),
 	}
 
 
 func _action_state_changed(before: Dictionary, after: Dictionary) -> bool:
 	if int(before.get("total_actions", 0)) != int(after.get("total_actions", 0)):
 		return true
-	return bool(before.get("pending_shop", false)) != bool(after.get("pending_shop", false))
+	if bool(before.get("pending_shop", false)) != bool(after.get("pending_shop", false)):
+		return true
+	return int(before.get("coins", 0)) != int(after.get("coins", 0))
 
 
 func _finish_action_turn(peer_id: int, reason: String = "") -> void:

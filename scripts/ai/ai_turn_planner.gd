@@ -16,24 +16,28 @@ static func plan_spend_actions_turn(
 	peer_id: int,
 	blocked_moves: Dictionary,
 	stall_signature: String,
-	stall_attempts: int
+	stall_attempts: int,
+	skip_shop: bool = false
 ) -> Dictionary:
 	var planned: Array = []
 	var blocked := blocked_moves.duplicate()
 	var signature := stall_signature
 	var attempts := stall_attempts
 	var should_end := false
+	var shop_sequence_planned := false
 	var turn_snapshot: Dictionary = GameState.export_debug_snapshot()
 
 	GameState.push_ai_search_silence()
+	ShopEvaluator.clear_evaluation_cache()
 	for _step in range(MAX_ACTIONS_PER_TURN):
 		if not _is_spend_actions_turn(peer_id):
 			break
 
-		if not GameState.has_pending_shop_action(peer_id):
+		if not skip_shop and not shop_sequence_planned and not GameState.has_pending_shop_action(peer_id):
 			var shop_context: AiContext = ContextBuilder.from_game(peer_id)
 			var shop_sequence: Array = ShopEvaluator.find_worthwhile_shop_sequence(peer_id, shop_context)
 			if not shop_sequence.is_empty():
+				shop_sequence_planned = true
 				var applied_shop := false
 				for shop_move_value in shop_sequence:
 					var shop_move: Dictionary = shop_move_value
@@ -47,14 +51,29 @@ static func plan_spend_actions_turn(
 						blocked[_move_key(shop_move)] = true
 						break
 
+					var shop_delta := float(shop_move.get("_shop_sequence_delta", 0.0))
+					if shop_delta == 0.0:
+						shop_delta = ShopEvaluator.evaluate_move_delta(
+							peer_id,
+							shop_move,
+							shop_context
+						)
+
 					var stored_shop_move: Dictionary = shop_move.duplicate(true)
 					stored_shop_move["_decision"] = {
 						"method": "shop_power_threshold",
-						"chosen_evaluator_score": 0.0,
-						"evaluator_rank": 0,
-						"evaluator_total": 0,
+						"chosen_evaluator_score": shop_delta,
+						"evaluator_rank": 1,
+						"evaluator_total": 1,
 						"alternatives": [],
 					}
+					if str(stored_shop_move.get("kind", "")) == MoveGenerator.KIND_SHOP_BUY:
+						stored_shop_move["_queen_follow_up_summary"] = (
+							ShopEvaluator.summarize_shop_sequence_follow_ups(
+								shop_sequence,
+								Shop.card_effect(stored_shop_move.get("card", {}))
+							)
+						)
 					planned.append(stored_shop_move)
 					applied_shop = true
 
@@ -117,6 +136,7 @@ static func plan_spend_actions_turn(
 
 	GameState.import_debug_snapshot(turn_snapshot, false)
 	GameState.pop_ai_search_silence()
+	ShopEvaluator.clear_evaluation_cache()
 
 	if _is_spend_actions_turn(peer_id):
 		if planned.is_empty():
@@ -280,10 +300,13 @@ static func _snapshot_action_state(peer_id: int) -> Dictionary:
 	return {
 		"total_actions": GameState.get_total_actions_for_peer(peer_id),
 		"pending_shop": GameState.has_pending_shop_action(peer_id),
+		"coins": int(GameState.player_coins.get(peer_id, 0)),
 	}
 
 
 static func _action_state_changed(before: Dictionary, after: Dictionary) -> bool:
 	if int(before.get("total_actions", 0)) != int(after.get("total_actions", 0)):
 		return true
-	return bool(before.get("pending_shop", false)) != bool(after.get("pending_shop", false))
+	if bool(before.get("pending_shop", false)) != bool(after.get("pending_shop", false)):
+		return true
+	return int(before.get("coins", 0)) != int(after.get("coins", 0))

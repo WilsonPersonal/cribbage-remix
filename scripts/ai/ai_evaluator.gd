@@ -3,6 +3,10 @@ extends RefCounted
 
 const Search := preload("res://scripts/ai/ai_search.gd")
 const PowerRating := preload("res://scripts/ai/faction_power_rating.gd")
+const ShopEvaluator := preload("res://scripts/ai/ai_shop_evaluator.gd")
+const AiMoveGenerator := preload("res://scripts/ai/ai_move_generator.gd")
+const PeggingPhase := preload("res://scripts/cribbage/pegging_phase.gd")
+const PeggingRules := preload("res://scripts/cribbage/pegging.gd")
 
 const MIN_POSITIVE_SCORE := 0.01
 
@@ -122,6 +126,17 @@ static func explain_move(move: Dictionary, context: AiContext, _use_lookahead: b
 	if str(move.get("kind", "")) == AiMoveGenerator.KIND_DISCARD:
 		return _explain_discard_move(move, context, before_ratings, before_ai)
 
+	var move_kind := str(move.get("kind", ""))
+	if move_kind in [
+		AiMoveGenerator.KIND_SHOP_BUY,
+		AiMoveGenerator.KIND_SHOP_DEPLOY_FACTION,
+		AiMoveGenerator.KIND_SHOP_KING_DEPLOY,
+	]:
+		return _explain_shop_move(move, context, before_ratings, before_ai)
+
+	if move_kind in [AiMoveGenerator.KIND_PEGGING_PLAY, AiMoveGenerator.KIND_PEGGING_PASS]:
+		return _explain_pegging_move(move, before_ratings, before_ai, context)
+
 	var snapshot: Dictionary = GameState.export_debug_snapshot()
 	Search.apply_move(peer_id, move)
 	var after_ratings := PowerRating.compute_all(
@@ -161,6 +176,83 @@ static func _decision_method(require_positive: bool) -> String:
 	if require_positive:
 		return "ai_power_positive"
 	return "ai_power"
+
+
+static func _explain_shop_move(
+	move: Dictionary,
+	context: AiContext,
+	before_ratings: Dictionary,
+	before_ai: Dictionary
+) -> Dictionary:
+	var factors: Array = []
+	var sequence_eval := ShopEvaluator.evaluate_buy_sequence(context.peer_id, move, context)
+	var total := float(move.get("_shop_sequence_delta", 0.0))
+	if sequence_eval.is_empty():
+		if absf(total) < 0.01:
+			var decision: Dictionary = move.get("_decision", {})
+			total = float(decision.get("chosen_evaluator_score", 0.0))
+		return _build_explanation(
+			before_ratings,
+			before_ratings,
+			before_ai,
+			before_ai,
+			total,
+			factors,
+			context
+		)
+
+	if absf(total) < 0.01:
+		total = float(sequence_eval.get("delta", 0.0))
+
+	return _build_explanation(
+		sequence_eval.get("before_ratings", before_ratings),
+		sequence_eval.get("after_ratings", before_ratings),
+		sequence_eval.get("before_ai", before_ai),
+		sequence_eval.get("after_ai", {}),
+		total,
+		factors,
+		context
+	)
+
+
+static func _explain_pegging_move(
+	move: Dictionary,
+	before_ratings: Dictionary,
+	before_ai: Dictionary,
+	context: AiContext
+) -> Dictionary:
+	var factors: Array = []
+	var total := 0.0
+	var kind := str(move.get("kind", ""))
+
+	if kind == AiMoveGenerator.KIND_PEGGING_PLAY:
+		var hand_index := int(move.get("hand_index", -1))
+		var hand: Array = GameState.get_hand_for_peer(context.peer_id)
+		if hand_index < 0 or hand_index >= hand.size():
+			total = -100.0
+		else:
+			var card: Dictionary = hand[hand_index]
+			var new_total := GameState.pegging_total + int(card.get("value", 0))
+			var sequence: Array = GameState.pegging_sequence.duplicate(true)
+			sequence.append(card)
+			for event in PeggingRules.score_events(sequence, new_total):
+				total += float(CribbageScoring.pegging_event_coins(event))
+			if GameState.get_total_pegging_cards_played() + 1 >= PeggingPhase.MAX_CARDS_PLAYED:
+				total += float(CribbageScoring.pegging_event_coins("last_card"))
+			if new_total == PeggingRules.MAX_TOTAL:
+				total += float(CribbageScoring.pegging_event_coins("thirty_one"))
+	elif kind == AiMoveGenerator.KIND_PEGGING_PASS:
+		total = 0.0
+
+	return _build_explanation(
+		before_ratings,
+		before_ratings,
+		before_ai,
+		before_ai,
+		total,
+		factors,
+		context
+	)
 
 
 static func _explain_discard_move(

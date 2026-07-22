@@ -6,6 +6,7 @@ signal pegging_pass_requested
 signal crib_hex_highlights_changed(target_hexes: Array)
 
 const CardWidgetScene := preload("res://scenes/card_widget.tscn")
+const PeggingPhase := preload("res://scripts/cribbage/pegging_phase.gd")
 const HAND_CARD_SIZE := Vector2(64, 92)
 const UNPLAYABLE_CARD_DIM := Color(0.42, 0.42, 0.42, 1.0)
 
@@ -65,6 +66,8 @@ func _ready() -> void:
 	GameState.local_hand_updated.connect(_on_local_hand_updated)
 	GameState.cut_card_updated.connect(_on_cut_card_updated)
 	GameState.pegging_state_updated.connect(_on_pegging_state_updated)
+	GameState.pegging_settling_changed.connect(_on_pegging_settling_changed)
+	GameState.pegging_hand_visibility_changed.connect(_on_pegging_hand_visibility_changed)
 	GameState.phase_changed.connect(_on_phase_changed)
 	GameState.game_message.connect(_on_game_message)
 	GameState.active_control_changed.connect(_on_active_control_changed)
@@ -218,7 +221,13 @@ func _update_crib_hex_highlights() -> void:
 
 
 func _on_local_hand_updated(hand: Array) -> void:
-	_local_hand = hand
+	if (
+		GameState.current_phase == GameState.Phase.PEGGING
+		and GameState.should_hide_pegging_hand_for_control()
+	):
+		_local_hand = []
+	else:
+		_local_hand = hand
 	if GameState.current_phase not in [GameState.Phase.SPEND_ACTIONS]:
 		_selected_indices.clear()
 	_refresh_hand_display()
@@ -255,11 +264,30 @@ func _on_pegging_state_updated(sequence: Array, total: int, turn_peer: int) -> v
 		turn_peer,
 		"Player %d" % turn_peer
 	)
-	message_label.text = "Count: %d / %d — play a card or pass if you cannot." % [
-		total,
-		PeggingRules.MAX_TOTAL,
-	]
+	if GameState.pegging_sequence.size() >= PeggingPhase.MAX_CARDS_PLAYED:
+		message_label.text = "Last card played — scoring hands next..."
+	elif GameState.should_hide_pegging_hand_for_control():
+		message_label.text = "Waiting for opponent to finish pegging..."
+	else:
+		message_label.text = "Count: %d / %d — play a card or pass if you cannot." % [
+			total,
+			PeggingRules.MAX_TOTAL,
+		]
 	_refresh_pegging_display(sequence)
+	_refresh_hand_display()
+	_update_action_buttons()
+
+
+func _on_pegging_settling_changed(_is_settling: bool) -> void:
+	if GameState.current_phase != GameState.Phase.PEGGING:
+		return
+	_refresh_hand_display()
+	_update_action_buttons()
+
+
+func _on_pegging_hand_visibility_changed() -> void:
+	if GameState.current_phase != GameState.Phase.PEGGING:
+		return
 	_refresh_hand_display()
 	_update_action_buttons()
 
@@ -400,11 +428,21 @@ func _refresh_crib_reminder() -> void:
 
 
 func _update_cards_block_visibility() -> void:
-	var has_hand := hand_container.get_child_count() > 0
+	var has_hand := hand_container.get_child_count() > 0 and not _should_hide_hand_display()
 	var show_crib := crib_discards_container.visible
 	var resolving_crib := _is_crib_resolution_phase() and GameState.is_crib_resolver_for_control()
 	cards_block.visible = (has_hand or show_crib) and not resolving_crib
 	hand_row.custom_minimum_size = Vector2(0, 92 if cards_block.visible else 0)
+
+
+func _should_hide_pegging_hand() -> bool:
+	return GameState.should_hide_pegging_hand_for_control()
+
+
+func _should_hide_hand_display() -> bool:
+	if GameState.current_phase != GameState.Phase.PEGGING:
+		return GameState.should_hide_show_hand()
+	return GameState.should_hide_pegging_hand_for_control()
 
 
 func _make_card_widget(index: int, card: Dictionary, disabled: bool = false) -> CardWidget:
@@ -418,15 +456,26 @@ func _make_card_widget(index: int, card: Dictionary, disabled: bool = false) -> 
 
 
 func _refresh_hand_display() -> void:
+	if GameState.current_phase == GameState.Phase.PEGGING:
+		GameState.reconcile_pegging_hand_state(false)
+
 	for child in hand_container.get_children():
 		child.queue_free()
+
+	if _should_hide_hand_display():
+		_update_cards_block_visibility()
+		return
 
 	var cards_to_show := _display_hand
 	if GameState.current_phase in [
 		GameState.Phase.DISCARD_TO_CRIB,
 		GameState.Phase.PEGGING,
 	]:
-		cards_to_show = _local_hand
+		cards_to_show = (
+			GameState.get_pegging_hand_for_control()
+			if GameState.current_phase == GameState.Phase.PEGGING
+			else _local_hand
+		)
 	elif GameState.current_phase == GameState.Phase.SPEND_ACTIONS:
 		cards_to_show = _display_hand
 	else:
@@ -619,9 +668,8 @@ func _update_crib_help() -> void:
 func _update_action_buttons() -> void:
 	var phase := GameState.current_phase
 	confirm_discard_button.visible = phase == GameState.Phase.DISCARD_TO_CRIB and _can_discard_for_control()
-	pass_button.visible = phase == GameState.Phase.PEGGING and _is_my_pegging_turn()
-	pass_button.disabled = not _can_pass_pegging()
-	action_row.visible = confirm_discard_button.visible or pass_button.visible
+	pass_button.visible = false
+	action_row.visible = confirm_discard_button.visible
 
 
 func _is_my_pegging_turn() -> bool:

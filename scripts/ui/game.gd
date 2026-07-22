@@ -7,6 +7,10 @@ const CARD_PANEL_HEIGHT := 200
 const SHOP_PANEL_HEIGHT := 184
 const CUBE_MOVE_SPIN_MAX := 5
 const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
+const WINNER_POPUP_HOLD_SECONDS := 10.0
+const WINNER_POPUP_FADE_IN_SECONDS := 0.25
+const WINNER_POPUP_FADE_OUT_SECONDS := 0.45
+const WINNER_POPUP_WIDTH := 520.0
 
 @onready var hud: PanelContainer = $HUD
 @onready var shop_panel: PanelContainer = $ShopPanel
@@ -58,6 +62,9 @@ const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.92)
 var _selected_action_type: int = -1
 var _selected_source_hex: int = -1
 var _pegging_popup_count: int = 0
+var _winner_popup: Control = null
+var _winner_popup_timer: SceneTreeTimer = null
+var _winner_popup_token := 0
 
 
 func _ready() -> void:
@@ -685,12 +692,150 @@ func _on_round_started(round_number: int) -> void:
 	]
 
 
-func _on_winner_decided(peer_id: int, faction_id: int) -> void:
+func _winner_headline(winner_name: String) -> String:
+	if winner_name.strip_edges().to_lower() == "you":
+		return "You Win!"
+	return "%s Wins!" % winner_name
+
+
+func _winner_influence_summary(
+	dominant_faction_id: int,
+	tiebreaker_faction_id: int
+) -> String:
+	var dominant_name := Factions.name_for(dominant_faction_id)
+	if tiebreaker_faction_id >= 0:
+		return "Tied for most influence in %s but more influence in %s." % [
+			dominant_name,
+			Factions.name_for(tiebreaker_faction_id),
+		]
+	return "Most influence in %s." % dominant_name
+
+
+func _winner_status_text(
+	winner_name: String,
+	dominant_faction_id: int,
+	tiebreaker_faction_id: int
+) -> String:
+	var summary := _winner_influence_summary(dominant_faction_id, tiebreaker_faction_id)
+	if winner_name.strip_edges().to_lower() == "you":
+		return "You win — %s" % summary
+	return "%s wins — %s" % [winner_name, summary]
+
+
+func _on_winner_decided(
+	peer_id: int,
+	dominant_faction_id: int,
+	tiebreaker_faction_id: int
+) -> void:
+	if _winner_popup != null and is_instance_valid(_winner_popup):
+		return
+
 	var winner_name: String = GameState.player_names.get(peer_id, "Player %d" % peer_id)
-	status_label.text = "%s wins with the most influence in %s." % [
+	status_label.text = _winner_status_text(
 		winner_name,
-		Factions.name_for(faction_id),
-	]
+		dominant_faction_id,
+		tiebreaker_faction_id
+	)
+	_show_winner_popup(winner_name, dominant_faction_id, tiebreaker_faction_id)
+
+
+func _clear_winner_popup() -> void:
+	_winner_popup_token += 1
+	_winner_popup_timer = null
+	if _winner_popup != null and is_instance_valid(_winner_popup):
+		_winner_popup.queue_free()
+	_winner_popup = null
+
+
+func _fade_out_winner_popup(token: int) -> void:
+	if token != _winner_popup_token:
+		return
+	if _winner_popup == null or not is_instance_valid(_winner_popup):
+		return
+
+	var overlay: Control = _winner_popup
+	var tween := create_tween()
+	tween.tween_property(overlay, "modulate:a", 0.0, WINNER_POPUP_FADE_OUT_SECONDS)
+	tween.finished.connect(func() -> void:
+		if token != _winner_popup_token:
+			return
+		_clear_winner_popup()
+	, CONNECT_ONE_SHOT)
+
+
+func _show_winner_popup(
+	winner_name: String,
+	dominant_faction_id: int,
+	tiebreaker_faction_id: int
+) -> void:
+	_clear_winner_popup()
+	var popup_token := _winner_popup_token
+
+	var overlay := Control.new()
+	overlay.name = "WinnerOverlay"
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.modulate.a = 0.0
+	overlay.z_as_relative = false
+	overlay.z_index = 40
+
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(center)
+
+	var stack := VBoxContainer.new()
+	stack.alignment = BoxContainer.ALIGNMENT_CENTER
+	stack.add_theme_constant_override("separation", 8)
+	center.add_child(stack)
+
+	var popup := Label.new()
+	popup.text = _winner_headline(winner_name)
+	popup.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	popup.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	popup.autowrap_mode = TextServer.AUTOWRAP_OFF
+	popup.add_theme_font_size_override("font_size", 52)
+	popup.add_theme_color_override("font_color", Color(1.0, 0.94, 0.55))
+	popup.add_theme_color_override("font_outline_color", Color(0.06, 0.08, 0.12))
+	popup.add_theme_constant_override("outline_size", 10)
+	popup.custom_minimum_size = Vector2(WINNER_POPUP_WIDTH, 88)
+	stack.add_child(popup)
+
+	var subtitle := Label.new()
+	subtitle.text = _winner_influence_summary(dominant_faction_id, tiebreaker_faction_id)
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	subtitle.add_theme_font_size_override("font_size", 22)
+	var subtitle_faction_id := (
+		tiebreaker_faction_id if tiebreaker_faction_id >= 0 else dominant_faction_id
+	)
+	var faction_color: Color = Factions.COLORS.get(subtitle_faction_id, Color.WHITE)
+	subtitle.add_theme_color_override(
+		"font_color",
+		faction_color.lightened(0.45)
+		if subtitle_faction_id != Factions.Id.CLUBS
+		else Color(0.92, 0.94, 0.98)
+	)
+	subtitle.add_theme_color_override("font_outline_color", Color(0.06, 0.08, 0.12))
+	subtitle.add_theme_constant_override("outline_size", 4)
+	subtitle.custom_minimum_size = Vector2(WINNER_POPUP_WIDTH, 64)
+	stack.add_child(subtitle)
+
+	add_child(overlay)
+	move_child(overlay, get_child_count() - 1)
+	_winner_popup = overlay
+
+	var tween_in := create_tween()
+	tween_in.tween_property(overlay, "modulate:a", 1.0, WINNER_POPUP_FADE_IN_SECONDS)
+	tween_in.finished.connect(func() -> void:
+		if popup_token != _winner_popup_token or overlay != _winner_popup:
+			return
+		_winner_popup_timer = get_tree().create_timer(WINNER_POPUP_HOLD_SECONDS)
+		_winner_popup_timer.timeout.connect(func() -> void:
+			_fade_out_winner_popup(popup_token)
+		, CONNECT_ONE_SHOT)
+	)
 
 
 func _on_push_pressed() -> void:
@@ -780,7 +925,7 @@ func _action_selection_ready() -> bool:
 func _action_blocked_message(peer_id: int, faction_id: int) -> String:
 	if GameState.is_faction_influence_locked(peer_id, faction_id):
 		return (
-			"An opponent leads %s influence by %d+ — buy a Jack to act."
+			"An opponent leads %s influence by %d+ — buy a Queen to act."
 			% [Factions.name_for(faction_id), RemixRules.INFLUENCE_ACTION_LOCK_GAP]
 		)
 	return "No actions left for %s." % Factions.name_for(faction_id)
@@ -1255,33 +1400,34 @@ func _update_action_help() -> void:
 
 
 func _refresh_ui() -> void:
-	var player_count := GameState.get_player_count()
-	if NetworkManager.is_offline_debug():
-		status_label.text = "Offline debug | %d local players" % player_count
-		var control_id := GameState.get_control_peer_id()
-		var control_name: String = GameState.player_names.get(control_id, "Player %d" % control_id)
-		control_peer_label.text = "Controlling: %s" % control_name
-	elif GameState.current_phase == GameState.Phase.WAITING:
-		if NetworkManager.is_server():
-			if player_count < RemixRules.MIN_PLAYERS:
-				status_label.text = "Host | waiting for players (%d/%d)" % [
-					player_count,
-					RemixRules.MIN_PLAYERS,
-				]
+	if GameState.current_phase != GameState.Phase.GAME_OVER:
+		var player_count := GameState.get_player_count()
+		if NetworkManager.is_offline_debug():
+			status_label.text = "Offline debug | %d local players" % player_count
+			var control_id := GameState.get_control_peer_id()
+			var control_name: String = GameState.player_names.get(control_id, "Player %d" % control_id)
+			control_peer_label.text = "Controlling: %s" % control_name
+		elif GameState.current_phase == GameState.Phase.WAITING:
+			if NetworkManager.is_server():
+				if player_count < RemixRules.MIN_PLAYERS:
+					status_label.text = "Host | waiting for players (%d/%d)" % [
+						player_count,
+						RemixRules.MIN_PLAYERS,
+					]
+				else:
+					status_label.text = "Host | %d players connected" % player_count
 			else:
-				status_label.text = "Host | %d players connected" % player_count
+				if player_count < RemixRules.MIN_PLAYERS:
+					status_label.text = "Connected | waiting for players (%d/%d)" % [
+						player_count,
+						RemixRules.MIN_PLAYERS,
+					]
+				else:
+					status_label.text = "Connected | %d players ready" % player_count
+		elif NetworkManager.is_server():
+			status_label.text = "Host | %d player(s) connected" % player_count
 		else:
-			if player_count < RemixRules.MIN_PLAYERS:
-				status_label.text = "Connected | waiting for players (%d/%d)" % [
-					player_count,
-					RemixRules.MIN_PLAYERS,
-				]
-			else:
-				status_label.text = "Connected | %d players ready" % player_count
-	elif NetworkManager.is_server():
-		status_label.text = "Host | %d player(s) connected" % player_count
-	else:
-		status_label.text = "Client | %d player(s) connected" % player_count
+			status_label.text = "Client | %d player(s) connected" % player_count
 	phase_label.text = "Phase: %s" % _phase_name(GameState.current_phase)
 	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	_update_pegging_history_button()
