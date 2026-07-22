@@ -2,13 +2,20 @@ extends Node
 
 signal thinking_started(peer_id: int)
 signal thinking_finished(peer_id: int)
+signal action_logged(entry: Dictionary)
+signal history_cleared
 
 const EXECUTE_DELAY_SEC := 1.0
 const MoveGenerator := preload("res://scripts/ai/ai_move_generator.gd")
 const TurnPlanner := preload("res://scripts/ai/ai_turn_planner.gd")
+const Search := preload("res://scripts/ai/ai_search.gd")
+const Evaluator := preload("res://scripts/ai/ai_evaluator.gd")
+const ContextBuilder := preload("res://scripts/ai/ai_context.gd")
+const PowerRating := preload("res://scripts/ai/faction_power_rating.gd")
 
 var enabled: bool = false
 var ai_peer_ids: Array[int] = []
+var action_history: Array = []
 var _busy: bool = false
 var _acting: bool = false
 var _queued_peer_id: int = 0
@@ -50,6 +57,8 @@ func request_turn() -> void:
 func disable() -> void:
 	enabled = false
 	ai_peer_ids.clear()
+	action_history.clear()
+	history_cleared.emit()
 	_busy = false
 	_acting = false
 	_queued_peer_id = 0
@@ -90,13 +99,267 @@ func is_ai_peer(peer_id: int) -> bool:
 	return enabled and int(peer_id) in ai_peer_ids
 
 
-func _ai_debug(text: String) -> void:
-	if not enabled:
+func get_action_history() -> Array:
+	return action_history.duplicate(true)
+
+
+func _record_ai_action(peer_id: int, move: Dictionary) -> void:
+	if not is_ai_peer(peer_id):
 		return
-	var line := text.strip_edges()
-	if line.is_empty():
+	var kind := str(move.get("kind", ""))
+	if kind in [MoveGenerator.KIND_PEGGING_PLAY, MoveGenerator.KIND_PEGGING_PASS]:
 		return
-	print("[AI Debug] ", line)
+	var action_id := action_history.size() + 1
+	var context := AiContext.from_game(peer_id)
+	var explanation := AiEvaluator.explain_move(move, context, true)
+	var board_snapshots := _capture_board_snapshots(peer_id, move)
+	var before_board: Array = board_snapshots.get("before_board", [])
+	var after_board: Array = board_snapshots.get("after_board", before_board)
+	var decision := _decision_from_move(move)
+	var alternatives: Array = []
+	if decision.is_empty():
+		alternatives = _rank_alternative_moves(peer_id, move, context)
+	else:
+		alternatives = _alternatives_from_decision(decision)
+	var entry := {
+		"id": action_id,
+		"round": GameState.round_number,
+		"phase": GameState.current_phase,
+		"peer_id": peer_id,
+		"summary": format_action_summary(move, action_id),
+		"description": _describe_move(move),
+		"move": _move_without_decision(move),
+		"explanation": explanation,
+		"decision": decision,
+		"alternatives": alternatives,
+		"before_board": before_board,
+		"after_board": after_board,
+		"highlight_hexes": board_snapshots.get("highlight_hexes", []),
+		"power_ratings_before": explanation.get("power_ratings_before", {}),
+		"power_ratings_after": explanation.get("power_ratings_after", {}),
+		"ai_power_before": explanation.get("ai_power_before", {}),
+		"ai_power_after": explanation.get("ai_power_after", {}),
+	}
+	action_history.append(entry)
+	action_logged.emit(entry)
+
+
+func _decision_from_move(move: Dictionary) -> Dictionary:
+	var raw: Dictionary = move.get("_decision", {})
+	if raw.is_empty():
+		return {}
+	return _snapshot_decision(raw)
+
+
+func _move_without_decision(move: Dictionary) -> Dictionary:
+	var copy := move.duplicate(true)
+	copy.erase("_decision")
+	return copy
+
+
+func _snapshot_decision(decision: Dictionary) -> Dictionary:
+	var snapshot := {
+		"method": str(decision.get("method", "heuristic")),
+		"chosen_evaluator_score": float(decision.get("chosen_evaluator_score", 0.0)),
+		"evaluator_rank": int(decision.get("evaluator_rank", 0)),
+		"evaluator_total": int(decision.get("evaluator_total", 0)),
+		"alternatives": [],
+	}
+	var alternatives: Array = []
+	for option in decision.get("alternatives", []):
+		var option_move: Dictionary = option.get("move", {})
+		alternatives.append({
+			"summary": format_action_summary(option_move),
+			"evaluator_score": float(option.get("evaluator_score", 0.0)),
+		})
+	snapshot["alternatives"] = alternatives
+	return snapshot
+
+
+func _alternatives_from_decision(decision: Dictionary) -> Array:
+	return decision.get("alternatives", []).duplicate(true)
+
+
+func format_action_summary(move: Dictionary, action_id: int = -1) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	if action_id > 0:
+		parts.append("#%d" % action_id)
+
+	match str(move.get("kind", "")):
+		MoveGenerator.KIND_FACTION_ACTION:
+			parts.append(_action_type_label(int(move.get("action_type", -1))))
+			parts.append(_move_faction_name(move))
+		MoveGenerator.KIND_END_ACTIONS:
+			parts.append("End turn")
+			parts.append("—")
+		MoveGenerator.KIND_CRIB_CHOICE:
+			parts.append("Accept" if bool(move.get("accept", false)) else "Reject")
+			parts.append(_move_faction_name(move))
+		MoveGenerator.KIND_SHOP_BUY:
+			parts.append("Shop buy")
+			parts.append(_shop_card_faction_name(move))
+		MoveGenerator.KIND_SHOP_DEPLOY_FACTION:
+			parts.append("Deploy")
+			parts.append(Factions.name_for(int(move.get("faction_id", -1))))
+		MoveGenerator.KIND_SHOP_KING_DEPLOY:
+			parts.append("King deploy")
+			parts.append(
+				Factions.name_for(int(move.get("faction_id", GameState.get_pending_shop_deploy_faction())))
+			)
+		MoveGenerator.KIND_PEGGING_PLAY:
+			parts.append("Peg")
+			parts.append("—")
+		MoveGenerator.KIND_PEGGING_PASS:
+			parts.append("Pass")
+			parts.append("—")
+		MoveGenerator.KIND_DISCARD:
+			parts.append("Discard")
+			parts.append(_discard_cards_summary(move))
+		_:
+			parts.append(str(move.get("kind", "Action")))
+			parts.append("—")
+
+	return "%s." % " | ".join(parts)
+
+
+func _rank_alternative_moves(peer_id: int, chosen: Dictionary, context: AiContext) -> Array:
+	var moves: Array = MoveGenerator.generate_moves(peer_id)
+	var ranked: Array = AiEvaluator.rank_moves(moves, context, true)
+	var alternatives: Array = []
+	var chosen_key := _move_key(chosen)
+
+	for entry in ranked:
+		var move: Dictionary = entry.get("move", {})
+		if _move_key(move) == chosen_key:
+			continue
+		alternatives.append({
+			"summary": format_action_summary(move),
+			"evaluator_score": float(entry.get("score", 0.0)),
+		})
+		if alternatives.size() >= 2:
+			break
+
+	return alternatives
+
+
+func _action_type_label(action_type: int) -> String:
+	match action_type:
+		ActionSystem.Type.PUSH:
+			return "Push"
+		ActionSystem.Type.PULL:
+			return "Pull"
+		ActionSystem.Type.CREATE_CART:
+			return "Cart"
+	return "Action"
+
+
+func _move_faction_name(move: Dictionary) -> String:
+	var faction_id := int(move.get("faction_id", -1))
+	if faction_id in Factions.ALL:
+		return Factions.name_for(faction_id)
+	return "—"
+
+
+func _shop_card_faction_name(move: Dictionary) -> String:
+	var card: Dictionary = move.get("card", {})
+	if card.is_empty():
+		return "—"
+	if card.has("faction"):
+		return Factions.name_for(int(card.get("faction", -1)))
+	return Factions.name_for(Factions.from_suit(str(card.get("suit", "clubs"))))
+
+
+func _discard_cards_summary(move: Dictionary) -> String:
+	var peer_id := int(move.get("peer_id", 0))
+	var hand: Array = GameState.get_hand_for_peer(peer_id)
+	var indices: Array = move.get("card_indices", [])
+	var discard_indices := {}
+	for index in indices:
+		discard_indices[int(index)] = true
+
+	var discarded: PackedStringArray = PackedStringArray()
+	var kept: PackedStringArray = PackedStringArray()
+	for card_index in range(hand.size()):
+		var label := _short_card_label(hand[card_index])
+		if discard_indices.has(card_index):
+			discarded.append(label)
+		else:
+			kept.append(label)
+
+	if discarded.is_empty() and kept.is_empty():
+		return "—"
+	return "to crib: %s | kept: %s" % [", ".join(discarded), ", ".join(kept)]
+
+
+func _short_card_label(card: Dictionary) -> String:
+	var rank := str(card.get("rank", "?"))
+	match str(card.get("suit", "")):
+		"hearts":
+			return "%sH" % rank
+		"diamonds":
+			return "%sD" % rank
+		"clubs":
+			return "%sC" % rank
+		"spades":
+			return "%sS*" % rank
+		_:
+			return rank
+
+
+func _capture_board_snapshots(peer_id: int, move: Dictionary) -> Dictionary:
+	var before_board := GameState.get_board_state()
+	var before_scores := GameState.faction_scores.duplicate()
+	var after_board := before_board
+	var after_scores := before_scores
+	var highlight_hexes := _move_board_hexes(move)
+
+	if _move_changes_board(move):
+		var snapshot := GameState.export_debug_snapshot()
+		Search.apply_move(peer_id, move)
+		after_board = GameState.get_board_state()
+		after_scores = GameState.faction_scores.duplicate()
+		Search.restore_snapshot(snapshot)
+
+	return {
+		"before_board": before_board,
+		"after_board": after_board,
+		"before_scores": before_scores,
+		"after_scores": after_scores,
+		"highlight_hexes": highlight_hexes,
+	}
+
+
+func _move_changes_board(move: Dictionary) -> bool:
+	var kind := str(move.get("kind", ""))
+	return kind in [
+		MoveGenerator.KIND_FACTION_ACTION,
+		MoveGenerator.KIND_SHOP_KING_DEPLOY,
+		MoveGenerator.KIND_CRIB_CHOICE,
+	]
+
+
+func _move_board_hexes(move: Dictionary) -> Array:
+	var hexes: Array = []
+	match str(move.get("kind", "")):
+		MoveGenerator.KIND_FACTION_ACTION:
+			_append_board_hex(hexes, int(move.get("hex_index", -1)))
+			_append_board_hex(hexes, int(move.get("target_hex", -1)))
+		MoveGenerator.KIND_SHOP_KING_DEPLOY:
+			_append_board_hex(hexes, int(move.get("hex_index", -1)))
+		MoveGenerator.KIND_CRIB_CHOICE:
+			_append_board_hex(hexes, int(move.get("hex_index", -1)))
+	return hexes
+
+
+func _append_board_hex(hexes: Array, hex_index: int) -> void:
+	if hex_index < 0 or hex_index >= HexBoard.HEX_COUNT:
+		return
+	if hex_index not in hexes:
+		hexes.append(hex_index)
+
+
+func _ai_debug(_text: String) -> void:
+	pass
 
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:
@@ -251,6 +514,7 @@ func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 			var before := _snapshot_action_state(peer_id)
 			_reset_stall_if_progress(peer_id, move)
 			_ai_debug("Execute %d | %s" % [step, _describe_move(move)])
+			_record_ai_action(peer_id, move)
 			GameState.run_as_peer(peer_id, func() -> void:
 				_execute_move(move)
 			)
@@ -268,38 +532,75 @@ func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 
 
 func _execute_planned_crib_turn(peer_id: int) -> void:
-	_begin_thinking(peer_id)
-	await get_tree().process_frame
-	var moves: Array = await TurnPlanner.plan_crib_choices(peer_id)
-	_end_thinking()
-	if moves.is_empty():
-		return
+	while _is_crib_resolution_turn(peer_id):
+		if GameState.is_crib_resolution_complete():
+			break
 
-	_ai_debug("Planned %d crib choice(s)" % moves.size())
-	for step in range(moves.size()):
-		if not _is_crib_resolution_turn(peer_id):
-			return
+		_begin_thinking(peer_id)
+		await get_tree().process_frame
 
-		var move: Dictionary = moves[step]
+		var moves: Array = MoveGenerator.generate_moves(peer_id)
+		if moves.is_empty():
+			_end_thinking()
+			_ai_debug(
+				"No crib moves available (%d/%d resolved)"
+				% [_crib_resolved_count(), _crib_total_count()]
+			)
+			break
+
+		var context: AiContext = ContextBuilder.from_game(peer_id)
+		var decision: Dictionary = Evaluator.choose_move_decision(moves, context)
+		_end_thinking()
+
+		var move: Dictionary = decision.get("move", {})
+		if move.is_empty():
+			break
+
+		move = move.duplicate(true)
+		move["_decision"] = decision
+
 		await get_tree().create_timer(EXECUTE_DELAY_SEC).timeout
 		if not _is_crib_resolution_turn(peer_id):
 			return
 
-		_ai_debug("Execute crib %d | %s" % [step, _describe_move(move)])
+		_ai_debug("Execute crib | %s" % _describe_move(move))
+		_record_ai_action(peer_id, move)
 		GameState.run_as_peer(peer_id, func() -> void:
 			_execute_move(move)
 		)
 
 
+func _crib_resolved_count() -> int:
+	match GameState.current_phase:
+		GameState.Phase.SETUP_MINI_CRIB:
+			return GameState.mini_crib_resolved.size()
+		GameState.Phase.RESOLVE_CRIB:
+			return GameState.end_crib_resolved.size()
+	return 0
+
+
+func _crib_total_count() -> int:
+	match GameState.current_phase:
+		GameState.Phase.SETUP_MINI_CRIB:
+			return GameState.MINI_CRIB_SIZE
+		GameState.Phase.RESOLVE_CRIB:
+			return GameState.crib.size()
+	return 0
+
+
 func _execute_single_planned_move(peer_id: int) -> void:
 	_begin_thinking(peer_id)
 	await get_tree().process_frame
-	var move: Dictionary = await TurnPlanner.choose_move(peer_id)
+	var decision: Dictionary = await TurnPlanner.choose_move(peer_id)
 	_end_thinking()
+	var move: Dictionary = decision.get("move", {})
 	if move.is_empty():
 		if GameState.current_phase == GameState.Phase.SPEND_ACTIONS:
 			_finish_action_turn(peer_id, "no move available")
 		return
+
+	move = move.duplicate(true)
+	move["_decision"] = decision
 
 	if str(move.get("kind", "")) == MoveGenerator.KIND_END_ACTIONS:
 		_finish_action_turn(peer_id, "end only")
@@ -318,6 +619,7 @@ func _execute_single_planned_move(peer_id: int) -> void:
 		if bool(GameState.discard_ready.get(peer_id, false)):
 			return
 
+	_record_ai_action(peer_id, move)
 	GameState.run_as_peer(peer_id, func() -> void:
 		_execute_move(move)
 	)
@@ -364,11 +666,6 @@ func _execute_move(move: Dictionary) -> void:
 			GameState.submit_shop_slot_purchase(int(move.get("slot_index", -1)))
 		MoveGenerator.KIND_SHOP_DEPLOY_FACTION:
 			GameState.submit_shop_deploy_faction(int(move.get("faction_id", -1)))
-		MoveGenerator.KIND_SHOP_JACK_PUSH:
-			GameState.submit_shop_jack_push(
-				int(move.get("from_hex", -1)),
-				int(move.get("to_hex", -1))
-			)
 		MoveGenerator.KIND_SHOP_KING_DEPLOY:
 			GameState.submit_shop_king_deploy(int(move.get("hex_index", -1)))
 		MoveGenerator.KIND_CRIB_CHOICE:
@@ -396,6 +693,14 @@ func _move_key(move: Dictionary) -> String:
 
 func _describe_move(move: Dictionary) -> String:
 	match str(move.get("kind", "")):
+		MoveGenerator.KIND_DISCARD:
+			return "discard indices %s" % str(move.get("card_indices", []))
+		MoveGenerator.KIND_PEGGING_PLAY:
+			return "pegging play card=%d" % int(move.get("hand_index", -1))
+		MoveGenerator.KIND_PEGGING_PASS:
+			return "pegging pass"
+		MoveGenerator.KIND_END_ACTIONS:
+			return "end action phase"
 		MoveGenerator.KIND_FACTION_ACTION:
 			var cart_note := "+cart " if bool(move.get("move_cart_also", false)) else ""
 			return "map %s%shex=%d target=%d faction=%d" % [
@@ -409,8 +714,6 @@ func _describe_move(move: Dictionary) -> String:
 			return "shop buy slot=%d" % int(move.get("slot_index", -1))
 		MoveGenerator.KIND_SHOP_DEPLOY_FACTION:
 			return "shop deploy faction=%d" % int(move.get("faction_id", -1))
-		MoveGenerator.KIND_SHOP_JACK_PUSH:
-			return "shop jack %d -> %d" % [int(move.get("from_hex", -1)), int(move.get("to_hex", -1))]
 		MoveGenerator.KIND_SHOP_KING_DEPLOY:
 			return "shop king deploy hex=%d" % int(move.get("hex_index", -1))
 		MoveGenerator.KIND_CRIB_CHOICE:
@@ -461,6 +764,7 @@ func _finish_action_turn(peer_id: int, reason: String = "") -> void:
 		if GameState.has_pending_shop_action(peer_id):
 			_ai_debug("Cannot end turn while shop action is still pending")
 			return
+	_record_ai_action(peer_id, {"kind": MoveGenerator.KIND_END_ACTIONS})
 	GameState.run_as_peer(peer_id, func() -> void:
 		GameState.submit_end_action_phase()
 	)

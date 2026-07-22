@@ -7,7 +7,6 @@ const KIND_PEGGING_PASS := "pegging_pass"
 const KIND_FACTION_ACTION := "faction_action"
 const KIND_SHOP_BUY := "shop_buy"
 const KIND_SHOP_DEPLOY_FACTION := "shop_deploy_faction"
-const KIND_SHOP_JACK_PUSH := "shop_jack_push"
 const KIND_SHOP_KING_DEPLOY := "shop_king_deploy"
 const KIND_CRIB_CHOICE := "crib_choice"
 const KIND_END_ACTIONS := "end_actions"
@@ -112,7 +111,7 @@ static func _generate_pending_shop_moves(peer_id: int) -> Array:
 	var effect := GameState.get_pending_shop_effect()
 	if GameState.pending_shop_needs_faction_choice():
 		for faction_id in Factions.ALL:
-			if effect == Shop.EFFECT_JACK and not _has_valid_jack_pushes(peer_id, faction_id):
+			if effect == Shop.EFFECT_JACK and not _has_jack_map_actions(peer_id, faction_id):
 				continue
 			if effect == Shop.EFFECT_KING and not _has_valid_king_deploys(peer_id, faction_id):
 				continue
@@ -129,21 +128,7 @@ static func _generate_pending_shop_moves(peer_id: int) -> Array:
 
 	match effect:
 		Shop.EFFECT_JACK:
-			if not GameState.player_can_act_with_faction(peer_id, deploy_faction):
-				return moves
-			for from_hex in GameState.get_hexes_with_faction_cubes(deploy_faction):
-				if GameState.get_faction_cubes_on_hex(from_hex, deploy_faction) <= 0:
-					continue
-				for to_hex in GameState.get_adjacent_hexes(from_hex):
-					if GameState.get_available_cube_space(deploy_faction, to_hex) <= 0:
-						continue
-					moves.append({
-						"kind": KIND_SHOP_JACK_PUSH,
-						"peer_id": peer_id,
-						"from_hex": from_hex,
-						"to_hex": to_hex,
-						"faction_id": deploy_faction,
-					})
+			moves.append_array(_generate_map_action_moves(peer_id, Shop.EFFECT_JACK))
 		Shop.EFFECT_KING:
 			if not GameState.player_can_act_with_faction(peer_id, deploy_faction):
 				return moves
@@ -154,8 +139,6 @@ static func _generate_pending_shop_moves(peer_id: int) -> Array:
 					"hex_index": hex_index,
 					"faction_id": deploy_faction,
 				})
-		Shop.EFFECT_QUEEN:
-			moves.append_array(_generate_map_action_moves(peer_id, true))
 	return moves
 
 
@@ -184,18 +167,31 @@ static func _generate_shop_buy_moves(peer_id: int) -> Array:
 	return moves
 
 
-static func _generate_map_action_moves(peer_id: int, queen_only: bool = false) -> Array:
+static func _generate_map_action_moves(peer_id: int, shop_effect: String = "") -> Array:
+	var jack_mode := shop_effect == Shop.EFFECT_JACK
+	var deploy_faction := -1
+	if jack_mode:
+		if (
+			not GameState.has_pending_shop_action(peer_id)
+			or GameState.get_pending_shop_effect() != Shop.EFFECT_JACK
+		):
+			return []
+		deploy_faction = GameState.get_pending_shop_deploy_faction()
+		if deploy_faction < 0:
+			return []
+
 	var moves: Array = []
 	for hex_index in range(HexBoard.HEX_COUNT):
-		var faction_id := GameState.get_controlling_faction(hex_index)
-		if faction_id < 0:
-			continue
+		var faction_id := -1
+		if jack_mode:
+			faction_id = deploy_faction
+			if GameState.get_faction_cubes_on_hex(hex_index, faction_id) <= 0:
+				continue
+		else:
+			faction_id = GameState.get_controlling_faction(hex_index)
+			if faction_id < 0:
+				continue
 		if not GameState.player_can_afford_action(peer_id, faction_id):
-			continue
-		if queen_only and (
-			not GameState.has_pending_shop_action(peer_id)
-			or GameState.get_pending_shop_effect() != Shop.EFFECT_QUEEN
-		):
 			continue
 
 		var available_cubes := GameState.get_faction_cubes_on_hex(hex_index, faction_id)
@@ -203,21 +199,14 @@ static func _generate_map_action_moves(peer_id: int, queen_only: bool = false) -
 			for target_hex in GameState.get_adjacent_hexes(hex_index):
 				var move_count := mini(
 					available_cubes,
-					GameState.get_available_cube_space(faction_id, target_hex)
+					GameState.get_available_cube_space_for_move(
+						faction_id,
+						target_hex,
+						hex_index,
+						false
+					)
 				)
-				if move_count <= 0:
-					continue
-				moves.append({
-					"kind": KIND_FACTION_ACTION,
-					"peer_id": peer_id,
-					"action_type": ActionSystem.Type.PUSH,
-					"hex_index": hex_index,
-					"target_hex": target_hex,
-					"cube_count": move_count,
-					"move_cart_also": false,
-					"faction_id": faction_id,
-				})
-				if _can_advance_any_cart(faction_id, hex_index, target_hex):
+				if move_count > 0:
 					moves.append({
 						"kind": KIND_FACTION_ACTION,
 						"peer_id": peer_id,
@@ -225,41 +214,80 @@ static func _generate_map_action_moves(peer_id: int, queen_only: bool = false) -
 						"hex_index": hex_index,
 						"target_hex": target_hex,
 						"cube_count": move_count,
-						"move_cart_also": true,
+						"move_cart_also": false,
 						"faction_id": faction_id,
 					})
+				if not jack_mode and _can_advance_any_cart(faction_id, hex_index, target_hex):
+					var cart_move_count := mini(
+						available_cubes,
+						GameState.get_available_cube_space_for_move(
+							faction_id,
+							target_hex,
+							hex_index,
+							true
+						)
+					)
+					if cart_move_count > 0:
+						moves.append({
+							"kind": KIND_FACTION_ACTION,
+							"peer_id": peer_id,
+							"action_type": ActionSystem.Type.PUSH,
+							"hex_index": hex_index,
+							"target_hex": target_hex,
+							"cube_count": cart_move_count,
+							"move_cart_also": true,
+							"faction_id": faction_id,
+						})
 
-		for source_hex in GameState.get_adjacent_hexes(hex_index):
-			var pull_count := mini(
-				GameState.get_faction_cubes_on_hex(source_hex, faction_id),
-				GameState.get_available_cube_space(faction_id, hex_index)
-			)
-			if pull_count <= 0:
-				continue
-			moves.append({
-				"kind": KIND_FACTION_ACTION,
-				"peer_id": peer_id,
-				"action_type": ActionSystem.Type.PULL,
-				"hex_index": hex_index,
-				"target_hex": source_hex,
-				"cube_count": pull_count,
-				"move_cart_also": false,
-				"faction_id": faction_id,
-			})
-			if _can_advance_any_cart(faction_id, source_hex, hex_index):
+		if not jack_mode:
+			for source_hex in GameState.get_adjacent_hexes(hex_index):
+				var source_cubes := GameState.get_faction_cubes_on_hex(source_hex, faction_id)
+				var pull_count := mini(
+					source_cubes,
+					GameState.get_available_cube_space_for_move(
+						faction_id,
+						hex_index,
+						source_hex,
+						false
+					)
+				)
+				if pull_count > 0:
+					moves.append({
+						"kind": KIND_FACTION_ACTION,
+						"peer_id": peer_id,
+						"action_type": ActionSystem.Type.PULL,
+						"hex_index": hex_index,
+						"target_hex": source_hex,
+						"cube_count": pull_count,
+						"move_cart_also": false,
+						"faction_id": faction_id,
+					})
+				if _can_advance_any_cart(faction_id, source_hex, hex_index):
+					var cart_pull_count := mini(
+						source_cubes,
+						GameState.get_available_cube_space_for_move(
+							faction_id,
+							hex_index,
+							source_hex,
+							true
+						)
+					)
+					if cart_pull_count > 0:
+						moves.append({
+							"kind": KIND_FACTION_ACTION,
+							"peer_id": peer_id,
+							"action_type": ActionSystem.Type.PULL,
+							"hex_index": hex_index,
+							"target_hex": source_hex,
+							"cube_count": cart_pull_count,
+							"move_cart_also": true,
+							"faction_id": faction_id,
+						})
+
+		if hex_index in HexBoard.MOUNTAIN_HEXES and not jack_mode:
+			var can_cart := _can_create_cart_on_hex(faction_id, hex_index)
+			if can_cart:
 				moves.append({
-					"kind": KIND_FACTION_ACTION,
-					"peer_id": peer_id,
-					"action_type": ActionSystem.Type.PULL,
-					"hex_index": hex_index,
-					"target_hex": source_hex,
-					"cube_count": pull_count,
-					"move_cart_also": true,
-					"faction_id": faction_id,
-				})
-
-		if hex_index in HexBoard.MOUNTAIN_HEXES and _can_create_cart_on_hex(faction_id, hex_index):
-			moves.append({
 				"kind": KIND_FACTION_ACTION,
 				"peer_id": peer_id,
 				"action_type": ActionSystem.Type.CREATE_CART,
@@ -285,16 +313,7 @@ static func has_actionable_moves(peer_id: int) -> bool:
 
 
 static func _can_create_cart_on_hex(faction_id: int, hex_index: int) -> bool:
-	if hex_index not in HexBoard.MOUNTAIN_HEXES:
-		return false
-	var board := HexBoard.new()
-	board.load_state(GameState.get_board_state())
-	if not board.controls_hex(faction_id, hex_index):
-		return false
-	if board.cube_count_for(faction_id, hex_index) <= 0:
-		return false
-	var goal_hex := int(HexBoard.CART_GOALS.get(hex_index, -1))
-	return not board.faction_has_cart_heading_to(faction_id, hex_index, goal_hex)
+	return GameState.can_create_cart_on_hex(faction_id, hex_index)
 
 
 static func _can_advance_any_cart(faction_id: int, from_hex: int, to_hex: int) -> bool:
@@ -306,12 +325,8 @@ static func _can_advance_any_cart(faction_id: int, from_hex: int, to_hex: int) -
 	return false
 
 
-static func _has_queen_map_actions(peer_id: int, faction_id: int) -> bool:
-	return GameState._has_queen_map_actions(peer_id, faction_id)
-
-
-static func _has_valid_jack_pushes(peer_id: int, faction_id: int) -> bool:
-	return GameState._has_valid_jack_pushes(peer_id, faction_id)
+static func _has_jack_map_actions(peer_id: int, faction_id: int) -> bool:
+	return GameState._has_jack_map_actions(peer_id, faction_id)
 
 
 static func _has_valid_king_deploys(peer_id: int, faction_id: int) -> bool:
@@ -341,10 +356,14 @@ static func _generate_crib_moves(peer_id: int) -> Array:
 				return []
 			cards = GameState.crib
 			resolved = GameState.end_crib_resolved
-			required_accepts = 2
+			required_accepts = GameState.get_crib_required_accepts()
 		_:
 			return []
 
+	var ending_crib := (
+		GameState.current_phase == GameState.Phase.RESOLVE_CRIB
+		and GameState.is_ending_crib_resolution()
+	)
 	var moves: Array = []
 	var accept_count := _count_accepts(resolved)
 	for card_index in range(cards.size()):
@@ -357,6 +376,13 @@ static func _generate_crib_moves(peer_id: int) -> Array:
 			for hex_index in range(HexBoard.HEX_COUNT):
 				if GameState.get_faction_cubes_on_hex(hex_index, faction_id) <= 0:
 					continue
+				if not GameState.can_submit_crib_card_choice(
+					card_index,
+					true,
+					hex_index,
+					peer_id
+				):
+					continue
 				moves.append({
 					"kind": KIND_CRIB_CHOICE,
 					"peer_id": peer_id,
@@ -366,10 +392,16 @@ static func _generate_crib_moves(peer_id: int) -> Array:
 					"faction_id": faction_id,
 				})
 
-		for hex_index in range(HexBoard.HEX_COUNT):
-			if not HexBoard.is_valid_reject_placement(card, hex_index):
-				continue
-			if GameState.get_available_cube_space(faction_id, hex_index) <= 0:
+		if ending_crib:
+			continue
+
+		for hex_index in GameState.get_valid_reject_hexes_for_card(card):
+			if not GameState.can_submit_crib_card_choice(
+				card_index,
+				false,
+				hex_index,
+				peer_id
+			):
 				continue
 			moves.append({
 				"kind": KIND_CRIB_CHOICE,

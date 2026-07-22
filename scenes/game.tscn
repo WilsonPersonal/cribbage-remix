@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3 uid="uid://c0486osgjfvr7"]
+[gd_scene load_steps=11 format=3 uid="uid://c0486osgjfvr7"]
 
 [ext_resource type="Script" uid="uid://d0dflhdrjj0iw" path="res://scripts/ui/game.gd" id="1_game"]
 [ext_resource type="Script" uid="uid://mvvynadvyebw" path="res://scripts/ui/hex_board_view.gd" id="2_board"]
@@ -7,6 +7,9 @@
 [ext_resource type="Script" path="res://scripts/ui/shop_panel.gd" id="6_shop"]
 [ext_resource type="Script" path="res://scripts/ui/ai_thinking_overlay.gd" id="7_ai_thinking_overlay"]
 [ext_resource type="Script" path="res://scripts/ui/ai_thinking_spinner.gd" id="8_ai_thinking_spinner"]
+[ext_resource type="Script" path="res://scripts/ui/ai_action_history_panel.gd" id="9_ai_action_history"]
+[ext_resource type="Script" path="res://scripts/ui/hex_board_mini_view.gd" id="10_hex_board_mini"]
+[ext_resource type="Script" path="res://scripts/ui/pegging_history_panel.gd" id="11_pegging_history"]
 
 [node name="Game" type="Control"]
 layout_mode = 3
@@ -146,6 +149,11 @@ visible = false
 text = "Pegging turn: —"
 horizontal_alignment = 1
 
+[node name="PeggingHistoryButton" type="Button" parent="HUD/Margin/VBox"]
+layout_mode = 2
+visible = false
+text = "Pegging History"
+
 [node name="StartRoundButton" type="Button" parent="HUD/Margin/VBox"]
 layout_mode = 2
 text = "Start Round (Host)"
@@ -179,6 +187,11 @@ text = "Save"
 layout_mode = 2
 size_flags_horizontal = 3
 text = "Load"
+
+[node name="AiHistoryButton" type="Button" parent="HUD/Margin/VBox/OfflineBar/OfflineButtons"]
+layout_mode = 2
+visible = false
+text = "AI Action History"
 
 [node name="CoinsLabel" type="Label" parent="HUD/Margin/VBox"]
 visible = false
@@ -319,6 +332,218 @@ text = "Clear Selection"
 layout_mode = 2
 visible = false
 text = "End Action Phase"
+
+[node name="AiActionHistoryOverlay" type="Control" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+script = ExtResource("9_ai_action_history")
+
+[node name="Backdrop" type="ColorRect" parent="AiActionHistoryOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+color = Color(0, 0, 0, 0.55)
+
+[node name="Panel" type="PanelContainer" parent="AiActionHistoryOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -500.0
+offset_top = -300.0
+offset_right = 500.0
+offset_bottom = 300.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Margin" type="MarginContainer" parent="AiActionHistoryOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 10
+
+[node name="VBox" type="VBoxContainer" parent="AiActionHistoryOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Header" type="HBoxContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Header"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 20
+text = "AI Action History"
+
+[node name="CloseButton" type="Button" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Header"]
+layout_mode = 2
+text = "Close"
+
+[node name="SummaryLabel" type="Label" parent="AiActionHistoryOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+autowrap_mode = 3
+text = "No AI actions recorded yet."
+
+[node name="Body" type="HBoxContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 10
+
+[node name="ListScroll" type="ScrollContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body"]
+custom_minimum_size = Vector2(360, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="ListVBox" type="VBoxContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/ListScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="DetailScroll" type="ScrollContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="DetailVBox" type="VBoxContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 8
+
+[node name="MapRow" type="HBoxContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="BeforeColumn" type="VBoxContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox/MapRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="BeforeCaption" type="Label" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox/MapRow/BeforeColumn"]
+layout_mode = 2
+text = "Before"
+horizontal_alignment = 1
+
+[node name="BeforeMap" type="Control" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox/MapRow/BeforeColumn"]
+custom_minimum_size = Vector2(190, 150)
+layout_mode = 2
+size_flags_horizontal = 3
+script = ExtResource("10_hex_board_mini")
+
+[node name="AfterColumn" type="VBoxContainer" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox/MapRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="AfterCaption" type="Label" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox/MapRow/AfterColumn"]
+layout_mode = 2
+text = "After"
+horizontal_alignment = 1
+
+[node name="AfterMap" type="Control" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox/MapRow/AfterColumn"]
+custom_minimum_size = Vector2(190, 150)
+layout_mode = 2
+size_flags_horizontal = 3
+script = ExtResource("10_hex_board_mini")
+
+[node name="InfluenceDiff" type="Label" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox"]
+layout_mode = 2
+horizontal_alignment = 1
+autowrap_mode = 3
+
+[node name="DetailLabel" type="Label" parent="AiActionHistoryOverlay/Panel/Margin/VBox/Body/DetailScroll/DetailVBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+autowrap_mode = 3
+text = "Select an action to see scoring factors."
+
+[node name="PeggingHistoryOverlay" type="Control" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+script = ExtResource("11_pegging_history")
+
+[node name="Backdrop" type="ColorRect" parent="PeggingHistoryOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+color = Color(0, 0, 0, 0.55)
+
+[node name="Panel" type="PanelContainer" parent="PeggingHistoryOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -420.0
+offset_top = -180.0
+offset_right = 420.0
+offset_bottom = 180.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Margin" type="MarginContainer" parent="PeggingHistoryOverlay/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 10
+
+[node name="VBox" type="VBoxContainer" parent="PeggingHistoryOverlay/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Header" type="HBoxContainer" parent="PeggingHistoryOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="PeggingHistoryOverlay/Panel/Margin/VBox/Header"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 20
+text = "Pegging History"
+
+[node name="CloseButton" type="Button" parent="PeggingHistoryOverlay/Panel/Margin/VBox/Header"]
+layout_mode = 2
+text = "Close"
+
+[node name="SummaryLabel" type="Label" parent="PeggingHistoryOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+autowrap_mode = 3
+text = "No pegging plays recorded yet."
+
+[node name="CardsScroll" type="ScrollContainer" parent="PeggingHistoryOverlay/Panel/Margin/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 2
+vertical_scroll_mode = 0
+
+[node name="CardsRow" type="HBoxContainer" parent="PeggingHistoryOverlay/Panel/Margin/VBox/CardsScroll"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 8
 
 [node name="CardPlayPanel" parent="." instance=ExtResource("3_cards")]
 layout_mode = 1

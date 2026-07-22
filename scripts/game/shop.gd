@@ -8,6 +8,7 @@ const SLOT_COUNT := 4
 const EFFECT_QUEEN := "queen"
 const EFFECT_JACK := "jack"
 const EFFECT_KING := "king"
+const QUEEN_ACTION_GRANT := 2
 
 
 static func slot_cost(slot_index: int) -> int:

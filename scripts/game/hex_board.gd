@@ -226,6 +226,14 @@ static func is_valid_reject_placement(card: Dictionary, hex_index: int) -> bool:
 	return rank_number in labels_for(hex_index)
 
 
+static func reject_hexes_for(card: Dictionary) -> Array:
+	var hexes: Array = []
+	for hex_index in range(HEX_COUNT):
+		if is_valid_reject_placement(card, hex_index):
+			hexes.append(hex_index)
+	return hexes
+
+
 func duplicate_state() -> Array:
 	var copy: Array = []
 	for hex in hexes:
@@ -291,6 +299,18 @@ static func cart_path_steps_to_goal(origin_hex: int, current_hex: int) -> int:
 	if index < 0:
 		return 999
 	return path.size() - 1 - index
+
+
+func faction_has_undelivered_cart_from_origin(faction: int, origin_hex: int) -> bool:
+	if origin_hex < 0 or origin_hex >= HEX_COUNT:
+		return false
+
+	for hex_index in range(HEX_COUNT):
+		for existing_origin in hexes[hex_index]["carts"].get(faction, []):
+			if int(existing_origin) == origin_hex:
+				return true
+
+	return false
 
 
 func faction_has_cart_heading_to(faction: int, hex_index: int, goal_hex: int) -> bool:
@@ -360,6 +380,32 @@ func cube_count_for(faction: int, hex_index: int) -> int:
 
 func available_cube_space(faction: int, hex_index: int) -> int:
 	return maxi(0, MAX_CUBES_PER_FACTION_PER_HEX - cube_count_for(faction, hex_index))
+
+
+func carts_scoring_on_advance(faction: int, from_hex: int, to_hex: int) -> int:
+	if from_hex < 0 or to_hex < 0:
+		return 0
+
+	for origin in hexes[from_hex]["carts"].get(faction, []):
+		var origin_hex := int(origin)
+		if not cart_can_advance(faction, from_hex, to_hex, origin_hex):
+			continue
+		if _cart_goal_for_origin(origin_hex) == to_hex:
+			return 1
+
+	return 0
+
+
+func available_cube_space_for_move(
+	faction: int,
+	dest_hex: int,
+	from_hex: int = -1,
+	move_cart_also: bool = false
+) -> int:
+	var space := available_cube_space(faction, dest_hex)
+	if from_hex >= 0 and move_cart_also:
+		space -= carts_scoring_on_advance(faction, from_hex, dest_hex)
+	return maxi(0, space)
 
 
 func can_add_cubes(faction: int, hex_index: int, amount: int = 1) -> bool:
@@ -452,7 +498,7 @@ func push(
 
 	if cube_count > 0:
 		var available := cube_count_for(faction, from_hex)
-		var space := available_cube_space(faction, to_hex)
+		var space := available_cube_space_for_move(faction, to_hex, from_hex, move_cart_also)
 		var move_count := mini(cube_count, mini(available, space))
 		if move_count > 0:
 			_remove_cubes(faction, from_hex, move_count)
@@ -465,15 +511,74 @@ func push(
 	return moved
 
 
-func push_cube_ignoring_dominance(faction: int, from_hex: int, to_hex: int) -> bool:
+func push_ignoring_dominance(
+	faction: int,
+	from_hex: int,
+	to_hex: int,
+	cube_count: int = 1,
+	move_cart_also: bool = false
+) -> bool:
 	if not are_adjacent(from_hex, to_hex):
 		return false
 	if cube_count_for(faction, from_hex) <= 0:
 		return false
-	if available_cube_space(faction, to_hex) <= 0:
+
+	var moved := false
+
+	if cube_count > 0:
+		var available := cube_count_for(faction, from_hex)
+		var space := available_cube_space_for_move(faction, to_hex, from_hex, move_cart_also)
+		var move_count := mini(cube_count, mini(available, space))
+		if move_count > 0:
+			_remove_cubes(faction, from_hex, move_count)
+			_add_cubes(faction, to_hex, move_count)
+			moved = true
+
+	if move_cart_also:
+		moved = advance_cart(faction, from_hex, to_hex) or moved
+
+	return moved
+
+
+func pull_ignoring_dominance(
+	faction: int,
+	to_hex: int,
+	from_hex: int,
+	cube_count: int = 1,
+	move_cart_also: bool = false
+) -> bool:
+	if not are_adjacent(from_hex, to_hex):
 		return false
-	_remove_cubes(faction, from_hex, 1)
-	_add_cubes(faction, to_hex, 1)
+	if cube_count_for(faction, from_hex) <= 0:
+		return false
+
+	var moved := false
+
+	if cube_count > 0:
+		var available := cube_count_for(faction, from_hex)
+		var space := available_cube_space_for_move(faction, to_hex, from_hex, move_cart_also)
+		var move_count := mini(cube_count, mini(available, space))
+		if move_count > 0:
+			_remove_cubes(faction, from_hex, move_count)
+			_add_cubes(faction, to_hex, move_count)
+			moved = true
+
+	if move_cart_also:
+		moved = advance_cart(faction, from_hex, to_hex) or moved
+
+	return moved
+
+
+func create_cart_ignoring_dominance(faction: int, hex_index: int) -> bool:
+	if hex_index not in MOUNTAIN_HEXES:
+		return false
+	if cube_count_for(faction, hex_index) <= 0:
+		return false
+	if faction_has_undelivered_cart_from_origin(faction, hex_index):
+		return false
+
+	_remove_cubes(faction, hex_index, 1)
+	hexes[hex_index]["carts"][faction].append(hex_index)
 	return true
 
 
@@ -500,7 +605,7 @@ func pull(
 
 	if cube_count > 0:
 		var available := cube_count_for(faction, from_hex)
-		var space := available_cube_space(faction, to_hex)
+		var space := available_cube_space_for_move(faction, to_hex, from_hex, move_cart_also)
 		var move_count := mini(cube_count, mini(available, space))
 		if move_count > 0:
 			_remove_cubes(faction, from_hex, move_count)
@@ -526,9 +631,7 @@ func create_cart(faction: int, hex_index: int) -> bool:
 		return false
 	if cube_count_for(faction, hex_index) <= 0:
 		return false
-
-	var goal_hex := _cart_goal_for_origin(hex_index)
-	if faction_has_cart_heading_to(faction, hex_index, goal_hex):
+	if faction_has_undelivered_cart_from_origin(faction, hex_index):
 		return false
 
 	_remove_cubes(faction, hex_index, 1)

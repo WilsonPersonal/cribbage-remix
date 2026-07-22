@@ -108,8 +108,11 @@ func handle_crib_hex(hex_index: int) -> void:
 		if not _would_reject_be_valid():
 			crib_help_label.text = "You must accept %d crib card(s)." % _required_accepts
 			return
-		if not HexBoard.is_valid_reject_placement(card, hex_index):
-			crib_help_label.text = "Reject: card rank must match a hex label (10s go anywhere)."
+		if not GameState.can_reject_crib_at(card, hex_index):
+			if GameState.has_reject_hex_with_space(card):
+				crib_help_label.text = "Reject: card rank must match a hex label (10s go anywhere)."
+			else:
+				crib_help_label.text = "Reject: rank hex is full — pick any hex with space."
 			return
 
 	GameState.submit_crib_card_choice(_selected_crib_card, _pending_crib_accept, hex_index)
@@ -172,6 +175,14 @@ func _update_crib_mode_help() -> void:
 		return
 	if _pending_crib_accept:
 		crib_help_label.text = "Accept — click a hex with a matching cube."
+	elif GameState.is_ending_crib_resolution():
+		crib_help_label.text = "Final crib — accept 1 card, then the game ends."
+	elif (
+		_selected_crib_card >= 0
+		and _selected_crib_card < _crib_cards.size()
+		and not GameState.has_reject_hex_with_space(_crib_cards[_selected_crib_card])
+	):
+		crib_help_label.text = "Reject — rank hex is full; click any hex with space."
 	else:
 		crib_help_label.text = "Reject — click a hex matching the card rank."
 
@@ -201,9 +212,8 @@ func _update_crib_hex_highlights() -> void:
 		and _selected_crib_card < _crib_cards.size()
 	):
 		var card: Dictionary = _crib_cards[_selected_crib_card]
-		for hex_index in range(HexBoard.HEX_COUNT):
-			if HexBoard.is_valid_reject_placement(card, hex_index):
-				hexes.append(hex_index)
+		for hex_index in GameState.get_valid_reject_hexes_for_card(card):
+			hexes.append(hex_index)
 	crib_hex_highlights_changed.emit(hexes)
 
 
@@ -504,7 +514,7 @@ func _update_crib_visibility(phase: GameState.Phase) -> void:
 	if phase == GameState.Phase.SETUP_MINI_CRIB:
 		_required_accepts = 1
 	elif phase == GameState.Phase.RESOLVE_CRIB:
-		_required_accepts = 2
+		_required_accepts = GameState.get_crib_required_accepts()
 	else:
 		_required_accepts = 0
 	_update_crib_action_buttons_visibility()
@@ -571,6 +581,8 @@ func _would_accept_be_valid() -> bool:
 
 
 func _would_reject_be_valid() -> bool:
+	if GameState.is_ending_crib_resolution():
+		return false
 	var accepts := _current_accept_count()
 	var remaining_after := _remaining_unplaced_crib_cards() - 1
 	return accepts + remaining_after >= _required_accepts
@@ -593,12 +605,15 @@ func _update_crib_help() -> void:
 			_required_accepts,
 		]
 	else:
-		crib_help_label.text = "Crib: %d / %d placed | accepts: %d / %d" % [
-			_crib_choices.size(),
-			_crib_cards.size(),
-			accept_count,
-			_required_accepts,
-		]
+		if GameState.is_ending_crib_resolution():
+			crib_help_label.text = "Final crib: accept 1 card — game ends (%d / 1)" % accept_count
+		else:
+			crib_help_label.text = "Crib: %d / %d placed | accepts: %d / %d" % [
+				_crib_choices.size(),
+				_crib_cards.size(),
+				accept_count,
+				_required_accepts,
+			]
 
 
 func _update_action_buttons() -> void:

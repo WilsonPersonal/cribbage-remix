@@ -46,11 +46,6 @@ static func _apply_move_on_server(move: Dictionary) -> void:
 			GameState.submit_shop_slot_purchase(int(move.get("slot_index", -1)))
 		MoveGenerator.KIND_SHOP_DEPLOY_FACTION:
 			GameState.submit_shop_deploy_faction(int(move.get("faction_id", -1)))
-		MoveGenerator.KIND_SHOP_JACK_PUSH:
-			GameState.submit_shop_jack_push(
-				int(move.get("from_hex", -1)),
-				int(move.get("to_hex", -1))
-			)
 		MoveGenerator.KIND_SHOP_KING_DEPLOY:
 			GameState.submit_shop_king_deploy(int(move.get("hex_index", -1)))
 		MoveGenerator.KIND_CRIB_CHOICE:

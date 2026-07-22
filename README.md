@@ -23,7 +23,7 @@ Game ends after the round where **combined faction score first reaches 7**.
 
 | Phase | Reward |
 |---|---|
-| **Show hands** | 1 action per pair, 15, or run of 3+ |
+| **Show hands** | 1 action per pair, 15, or run of 3+; clamped to **2–7** actions (excess → coins, shortfall → pay coins) |
 | **Pegging** | Coins (pair, 15, 31, go, etc.) — **not** actions |
 
 ## Shop

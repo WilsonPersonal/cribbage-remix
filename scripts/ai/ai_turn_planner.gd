@@ -2,11 +2,13 @@ class_name AiTurnPlanner
 extends RefCounted
 
 const MoveGenerator := preload("res://scripts/ai/ai_move_generator.gd")
-const Mcts := preload("res://scripts/ai/ai_mcts.gd")
+const Evaluator := preload("res://scripts/ai/ai_evaluator.gd")
 const ContextBuilder := preload("res://scripts/ai/ai_context.gd")
 const Search := preload("res://scripts/ai/ai_search.gd")
+const ShopEvaluator := preload("res://scripts/ai/ai_shop_evaluator.gd")
 
 const MAX_ACTIONS_PER_TURN := 24
+const MAX_CRIB_PLAN_STEPS := 16
 const MAX_STALL_ATTEMPTS := 3
 
 
@@ -20,6 +22,7 @@ static func plan_spend_actions_turn(
 	var blocked := blocked_moves.duplicate()
 	var signature := stall_signature
 	var attempts := stall_attempts
+	var should_end := false
 	var turn_snapshot: Dictionary = GameState.export_debug_snapshot()
 
 	GameState.push_ai_search_silence()
@@ -27,7 +30,50 @@ static func plan_spend_actions_turn(
 		if not _is_spend_actions_turn(peer_id):
 			break
 
-		var moves: Array = _filter_blocked_moves(MoveGenerator.generate_moves(peer_id), blocked)
+		if not GameState.has_pending_shop_action(peer_id):
+			var shop_context: AiContext = ContextBuilder.from_game(peer_id)
+			var shop_sequence: Array = ShopEvaluator.find_worthwhile_shop_sequence(peer_id, shop_context)
+			if not shop_sequence.is_empty():
+				var applied_shop := false
+				for shop_move_value in shop_sequence:
+					var shop_move: Dictionary = shop_move_value
+					if not _is_spend_actions_turn(peer_id):
+						break
+
+					var shop_before := _snapshot_action_state(peer_id)
+					Search.apply_move(peer_id, shop_move)
+					var shop_after := _snapshot_action_state(peer_id)
+					if not _action_state_changed(shop_before, shop_after):
+						blocked[_move_key(shop_move)] = true
+						break
+
+					var stored_shop_move: Dictionary = shop_move.duplicate(true)
+					stored_shop_move["_decision"] = {
+						"method": "shop_power_threshold",
+						"chosen_evaluator_score": 0.0,
+						"evaluator_rank": 0,
+						"evaluator_total": 0,
+						"alternatives": [],
+					}
+					planned.append(stored_shop_move)
+					applied_shop = true
+
+				if applied_shop:
+					attempts = 0
+					if not _is_spend_actions_turn(peer_id):
+						break
+					if GameState.get_total_actions_for_peer(peer_id) <= 0:
+						break
+					if (
+						not MoveGenerator.has_actionable_moves(peer_id)
+						and not GameState.has_pending_shop_action(peer_id)
+					):
+						break
+					continue
+
+		var moves: Array = _without_shop_buys(
+			_filter_blocked_moves(MoveGenerator.generate_moves(peer_id), blocked)
+		)
 		if moves.is_empty():
 			if MoveGenerator.generate_moves(peer_id).is_empty():
 				var recovery := _try_recover_stuck_turn(peer_id, signature, attempts)
@@ -38,8 +84,11 @@ static func plan_spend_actions_turn(
 			break
 
 		var context: AiContext = ContextBuilder.from_game(peer_id)
-		var move: Dictionary = await Mcts.choose_move(moves, context)
+		var decision: Dictionary = Evaluator.choose_move_decision(moves, context, true)
+		var move: Dictionary = decision.get("move", {})
 		if move.is_empty() or str(move.get("kind", "")) == MoveGenerator.KIND_END_ACTIONS:
+			if not moves.is_empty():
+				should_end = true
 			break
 
 		var before := _snapshot_action_state(peer_id)
@@ -53,7 +102,9 @@ static func plan_spend_actions_turn(
 		if str(move.get("kind", "")) != MoveGenerator.KIND_SHOP_BUY:
 			attempts = 0
 
-		planned.append(move.duplicate(true))
+		var stored_move: Dictionary = move.duplicate(true)
+		stored_move["_decision"] = decision
+		planned.append(stored_move)
 
 		if not _is_spend_actions_turn(peer_id):
 			break
@@ -67,7 +118,6 @@ static func plan_spend_actions_turn(
 	GameState.import_debug_snapshot(turn_snapshot, false)
 	GameState.pop_ai_search_silence()
 
-	var should_end := false
 	if _is_spend_actions_turn(peer_id):
 		if planned.is_empty():
 			should_end = true
@@ -93,22 +143,42 @@ static func plan_crib_choices(peer_id: int) -> Array:
 	var turn_snapshot: Dictionary = GameState.export_debug_snapshot()
 
 	GameState.push_ai_search_silence()
-	while _is_crib_resolution_turn(peer_id):
+	for _step in range(MAX_CRIB_PLAN_STEPS):
+		if not _is_crib_resolution_turn(peer_id):
+			break
+
 		var moves: Array = MoveGenerator.generate_moves(peer_id)
 		if moves.is_empty():
 			break
 
+		var resolved_before := _crib_resolved_count()
 		var context: AiContext = ContextBuilder.from_game(peer_id)
-		var move: Dictionary = await Mcts.choose_move(moves, context)
+		var decision: Dictionary = Evaluator.choose_move_decision(moves, context)
+		var move: Dictionary = decision.get("move", {})
 		if move.is_empty():
 			break
 
 		Search.apply_move(peer_id, move)
-		planned.append(move.duplicate(true))
+		var resolved_after := _crib_resolved_count()
+		if resolved_after <= resolved_before:
+			break
+
+		var stored_move: Dictionary = move.duplicate(true)
+		stored_move["_decision"] = decision
+		planned.append(stored_move)
 
 	GameState.import_debug_snapshot(turn_snapshot, false)
 	GameState.pop_ai_search_silence()
 	return planned
+
+
+static func _crib_resolved_count() -> int:
+	match GameState.current_phase:
+		GameState.Phase.SETUP_MINI_CRIB:
+			return GameState.mini_crib_resolved.size()
+		GameState.Phase.RESOLVE_CRIB:
+			return GameState.end_crib_resolved.size()
+	return 0
 
 
 static func choose_move(peer_id: int) -> Dictionary:
@@ -116,7 +186,8 @@ static func choose_move(peer_id: int) -> Dictionary:
 	if moves.is_empty():
 		return {}
 	var context: AiContext = ContextBuilder.from_game(peer_id)
-	return await Mcts.choose_move(moves, context)
+	var require_positive := GameState.current_phase == GameState.Phase.SPEND_ACTIONS
+	return Evaluator.choose_move_decision(moves, context, require_positive)
 
 
 static func _is_spend_actions_turn(peer_id: int) -> bool:
@@ -187,6 +258,15 @@ static func _filter_blocked_moves(moves: Array, blocked_moves: Dictionary) -> Ar
 		if str(move.get("kind", "")) == MoveGenerator.KIND_END_ACTIONS:
 			continue
 		if blocked_moves.has(_move_key(move)):
+			continue
+		filtered.append(move)
+	return filtered
+
+
+static func _without_shop_buys(moves: Array) -> Array:
+	var filtered: Array = []
+	for move in moves:
+		if str(move.get("kind", "")) == MoveGenerator.KIND_SHOP_BUY:
 			continue
 		filtered.append(move)
 	return filtered
