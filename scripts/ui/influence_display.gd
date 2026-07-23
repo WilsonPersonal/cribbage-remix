@@ -60,6 +60,13 @@ func get_dot_global(peer_id: int, dot_index: int) -> Vector2:
 	return row.get_dot_global(dot_index)
 
 
+func get_faction_dots_global_rect(peer_id: int, faction_id: int) -> Rect2:
+	var row := _find_row_for_peer(peer_id)
+	if row == null:
+		return get_global_rect()
+	return row.get_faction_dots_global_rect(faction_id)
+
+
 func _find_row_for_peer(peer_id: int) -> InfluenceRowDots:
 	for child in get_children():
 		if child is HBoxContainer:
@@ -154,6 +161,26 @@ class InfluenceRowDots extends Control:
 
 	func get_dot_global(dot_index: int) -> Vector2:
 		return global_position + _dot_local_position(dot_index)
+
+
+	func get_faction_dots_global_rect(faction_id: int) -> Rect2:
+		var start_index := 0
+		for faction in Factions.ALL:
+			var count := RemixRules.faction_dict_value(_influence, faction)
+			if int(faction) == int(faction_id):
+				if count <= 0:
+					return Rect2(global_position, Vector2(DOT_RADIUS * 2.0, DOT_RADIUS * 2.0))
+				var bounds := Rect2()
+				for offset in range(count):
+					var pos := global_position + _dot_local_position(start_index + offset)
+					var dot_rect := Rect2(
+						pos - Vector2(DOT_RADIUS, DOT_RADIUS),
+						Vector2(DOT_RADIUS * 2.0, DOT_RADIUS * 2.0)
+					)
+					bounds = dot_rect if bounds.size == Vector2.ZERO else bounds.merge(dot_rect)
+				return bounds
+			start_index += count
+		return Rect2(global_position, Vector2(DOT_RADIUS * 2.0, DOT_RADIUS * 2.0))
 
 
 	func _dot_count() -> int:

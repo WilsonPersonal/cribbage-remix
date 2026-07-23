@@ -11,16 +11,17 @@ const HEX_COUNT := 9
 
 ## Pasture (light green), forest (dark green), and mountain (grey) setup counts.
 const PASTURE_SETUP_CUBES := 3
-const FOREST_SETUP_CUBES := 2
+const FOREST_SETUP_CUBES := 1
 const MOUNTAIN_SETUP_CUBES := 5
+const FACTION_STARTING_CUBES := 9
 const MAX_CUBES_PER_FACTION_PER_HEX := 5
 
 ## Map layout (hex index -> terrain / labels):
-##       [0 M 3,8]
-##   [1 F5]   [8 F5]
-##       [4 P4] [2 P6]
-##   [3 F5]   [5 P7]
-## [6 M29]     [7 M110]
+##       [0 M 2]
+##   [1 F9]   [8 F3]
+##       [4 P7] [2 P1]
+##   [3 F6]   [5 P4]
+## [6 M8]     [7 M5]
 const MOUNTAIN_HEXES := [0, 6, 7]
 const FOREST_HEXES := [1, 3, 8]
 const PASTURE_HEXES := [2, 4, 5]
@@ -32,9 +33,9 @@ const CART_GOALS := {
 }
 
 ## Fixed routes from each mountain spawn to its goal forest. Carts must follow these hexes in order.
-## Hex 7 (labels 1, 10): 7 -> 5 (label 7) -> 4 (label 4) -> forest 1
-## Hex 0 (labels 3, 8): 0 -> 2 -> 5 -> forest 3
-## Hex 6 (labels 2, 9): 6 -> 4 -> 2 -> forest 8
+## Hex 7 (label 5): 7 -> 5 (label 4) -> 4 (label 7) -> forest 1 (label 9)
+## Hex 0 (label 2): 0 -> 2 (label 1) -> 5 (label 4) -> forest 3 (label 6)
+## Hex 6 (label 8): 6 -> 4 (label 7) -> 2 (label 1) -> forest 8 (label 3)
 const CART_PATHS := {
 	0: [0, 2, 5, 3],
 	6: [6, 4, 2, 8],
@@ -89,15 +90,15 @@ const TERRAIN := {
 }
 
 const HEX_LABELS := {
-	0: [3, 8],
-	1: [5],
-	2: [6],
-	3: [5],
-	4: [4],
-	5: [7],
-	6: [2, 9],
-	7: [1, 10],
-	8: [5],
+	0: [2],
+	1: [9],
+	2: [1],
+	3: [6],
+	4: [7],
+	5: [4],
+	6: [8],
+	7: [5],
+	8: [3],
 }
 
 var hexes: Array = []
@@ -117,22 +118,54 @@ func reset() -> void:
 
 
 ## Draw setup cards from the deck, place matching suit cubes, and return the drawn cards.
+## Each faction starts with FACTION_STARTING_CUBES cubes across all hexes.
+## Remaining deck cards are left in the passed deck array.
 func setup_from_deck(deck: Array) -> Array:
 	reset()
 	var drawn: Array = []
 
+	var placement_slots: Array = []
 	for hex_index in range(HEX_COUNT):
 		var draw_count := setup_cube_count_for(hex_index)
+		for _i in range(draw_count):
+			placement_slots.append(hex_index)
 
-		for _draw in range(draw_count):
-			if deck.is_empty():
-				push_warning("Setup deck ran out while placing cubes on hex %d." % hex_index)
-				break
+	placement_slots.shuffle()
 
-			var card: Dictionary = deck.pop_back()
-			drawn.append(card)
-			var faction: int = int(card.get("faction", Factions.from_suit(str(card.get("suit", "clubs")))))
-			hexes[hex_index]["cubes"][faction] = int(hexes[hex_index]["cubes"].get(faction, 0)) + 1
+	var cards_by_faction: Dictionary = {}
+	for faction_id in Factions.ALL:
+		cards_by_faction[faction_id] = []
+
+	var remaining: Array = []
+	for card in deck:
+		var faction_id := int(
+			card.get("faction", Factions.from_suit(str(card.get("suit", "clubs"))))
+		)
+		if (
+			faction_id in cards_by_faction
+			and cards_by_faction[faction_id].size() < FACTION_STARTING_CUBES
+		):
+			cards_by_faction[faction_id].append(card)
+		else:
+			remaining.append(card)
+
+	deck.clear()
+	deck.append_array(remaining)
+
+	var setup_cards: Array = []
+	for faction_id in Factions.ALL:
+		for card in cards_by_faction.get(faction_id, []):
+			setup_cards.append(card)
+	setup_cards.shuffle()
+
+	for index in range(mini(setup_cards.size(), placement_slots.size())):
+		var card: Dictionary = setup_cards[index]
+		var hex_index: int = int(placement_slots[index])
+		drawn.append(card)
+		var faction: int = int(
+			card.get("faction", Factions.from_suit(str(card.get("suit", "clubs"))))
+		)
+		hexes[hex_index]["cubes"][faction] = int(hexes[hex_index]["cubes"].get(faction, 0)) + 1
 
 	return drawn
 
@@ -679,6 +712,39 @@ func add_cube(faction: int, hex_index: int) -> bool:
 
 	_add_cubes(faction, hex_index, 1)
 	return true
+
+
+func add_cubes_with_spillover(faction: int, preferred_hex: int, count: int) -> int:
+	if count <= 0 or preferred_hex < 0 or preferred_hex >= HEX_COUNT:
+		return 0
+
+	var placed := 0
+	var remaining := count
+
+	var preferred_space := available_cube_space(faction, preferred_hex)
+	if preferred_space > 0:
+		var here := mini(remaining, preferred_space)
+		_add_cubes(faction, preferred_hex, here)
+		placed += here
+		remaining -= here
+
+	if remaining <= 0:
+		return placed
+
+	for hex_index in range(HEX_COUNT):
+		if hex_index == preferred_hex:
+			continue
+		var space := available_cube_space(faction, hex_index)
+		if space <= 0:
+			continue
+		var here := mini(remaining, space)
+		_add_cubes(faction, hex_index, here)
+		placed += here
+		remaining -= here
+		if remaining <= 0:
+			break
+
+	return placed
 
 
 func _distance_to_hex(from_hex: int, to_hex: int) -> int:

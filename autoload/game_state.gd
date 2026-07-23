@@ -32,8 +32,17 @@ signal local_hand_updated(hand: Array)
 signal cut_card_updated(card: Dictionary)
 signal action_turn_updated(peer_id: int)
 signal action_history_changed(can_undo: bool)
+signal crib_undo_changed(can_undo: bool)
 signal crib_resolution_updated(crib_cards: Array, resolved: Dictionary, resolver_peer: int)
-signal crib_cube_anim_requested(accept: bool, hex_index: int, faction_id: int, card_index: int, peer_id: int)
+signal pending_crib_reject_updated
+signal crib_cube_anim_requested(
+	accept: bool,
+	hex_index: int,
+	faction_id: int,
+	card_index: int,
+	peer_id: int,
+	reject_complete: bool
+)
 signal action_cube_anim_requested(faction_id: int, from_hex: int, to_hex: int, move_count: int)
 signal action_cart_anim_requested(
 	faction_id: int, from_hex: int, to_hex: int, origin_hex: int
@@ -50,11 +59,13 @@ signal crib_discards_updated
 signal round_context_updated(dealer_peer_id: int, crib_owner_peer_id: int)
 signal shop_updated(slots: Array)
 signal shop_action_pending_updated(pending: Dictionary)
+signal shop_purchase_scored(buyer_peer_id: int, card: Dictionary, cost: int)
 signal game_message(message: String)
 signal active_control_changed(peer_id: int)
 signal lobby_updated
 
 var offline_debug_mode: bool = false
+var tutorial_mode: bool = false
 var vs_ai_mode: bool = false
 var pending_vs_ai: bool = false
 var active_control_peer_id: int = 1
@@ -98,6 +109,7 @@ var mini_crib_resolving_peer: int = 0
 var mini_crib_cards: Array = []
 var mini_crib_resolved: Dictionary = {}
 var end_crib_resolved: Dictionary = {}
+var pending_crib_reject: Dictionary = {}
 var crib_resolver_peer_id: int = 0
 var _mini_cribs_completed_for_round: bool = false
 var pegging_total: int = 0
@@ -114,6 +126,7 @@ var show_hands: Dictionary = {}
 var player_crib_discards: Dictionary = {}
 
 var _action_undo_stack: Array = []
+var _crib_undo_stack: Array = []
 var _board := HexBoard.new()
 var _deck: Array = []
 var _face_card_deck: Array = []
@@ -131,6 +144,10 @@ var _queen_influence_unlocks: Dictionary = {}
 
 func is_pegging_settling() -> bool:
 	return _pegging_settling
+
+
+func pegging_go_awarded_this_count() -> bool:
+	return _pegging_other_passed
 
 
 func is_pegging_finish_settling() -> bool:
@@ -280,6 +297,286 @@ func setup_offline_vs_ai(human_name: String = "You", ai_name: String = "AI") -> 
 	_broadcast_message("Playing vs %s. You are %s." % [ai_name, human_name])
 
 
+func setup_tutorial_how_to_win() -> void:
+	if not NetworkManager.is_offline_debug():
+		return
+
+	tutorial_mode = true
+	offline_debug_mode = true
+	vs_ai_mode = false
+	AiController.disable()
+	player_names.clear()
+	player_influence.clear()
+	player_supply.clear()
+	player_coins.clear()
+	action_points.clear()
+	player_faction_actions.clear()
+	last_pegging_log.clear()
+	_current_pegging_log.clear()
+	faction_scores = {
+		Factions.Id.CLUBS: 0,
+		Factions.Id.HEARTS: 0,
+		Factions.Id.DIAMONDS: 0,
+	}
+	faction_score_recency = {
+		Factions.Id.CLUBS: 0,
+		Factions.Id.HEARTS: 0,
+		Factions.Id.DIAMONDS: 0,
+	}
+	_faction_score_recency_counter = 0
+	ending_round_triggered = false
+	round_number = 1
+	active_player_order = [1, 2]
+	action_turn_peer_id = 1
+	_board_setup_complete = true
+	_board.reset()
+	_populate_tutorial_board()
+
+	register_player(1, "You")
+	register_player(2, "Rival")
+	set_active_control_peer(1)
+
+	player_influence[1] = {
+		Factions.Id.CLUBS: 1,
+		Factions.Id.HEARTS: 2,
+		Factions.Id.DIAMONDS: 0,
+	}
+	player_influence[2] = {
+		Factions.Id.CLUBS: 1,
+		Factions.Id.HEARTS: 1,
+		Factions.Id.DIAMONDS: 1,
+	}
+	player_coins[1] = 6
+	player_coins[2] = 6
+	action_points[1] = 3
+	action_points[2] = 3
+
+	faction_scores = {
+		Factions.Id.CLUBS: 3,
+		Factions.Id.HEARTS: 2,
+		Factions.Id.DIAMONDS: 1,
+	}
+	faction_score_recency = {
+		Factions.Id.CLUBS: 20,
+		Factions.Id.HEARTS: 30,
+		Factions.Id.DIAMONDS: 10,
+	}
+	_faction_score_recency_counter = 30
+	ending_round_triggered = false
+
+	_apply_faction_scores_state(faction_scores, faction_score_recency)
+	_apply_influence(player_influence)
+	_broadcast_coins()
+	_apply_action_points(action_points)
+	_broadcast_board()
+	_set_phase(Phase.SPEND_ACTIONS)
+	_broadcast_message("Tutorial: How to Win the Game")
+
+
+func setup_tutorial_actions_and_influence() -> void:
+	if not NetworkManager.is_offline_debug():
+		return
+
+	tutorial_mode = true
+	offline_debug_mode = true
+	vs_ai_mode = false
+	AiController.disable()
+	player_names.clear()
+	player_influence.clear()
+	player_supply.clear()
+	player_coins.clear()
+	action_points.clear()
+	player_faction_actions.clear()
+	last_pegging_log.clear()
+	_current_pegging_log.clear()
+	show_hands.clear()
+	crib.clear()
+	end_crib_resolved.clear()
+	pending_crib_reject.clear()
+	cut_card = {}
+	faction_scores = {
+		Factions.Id.CLUBS: 1,
+		Factions.Id.HEARTS: 1,
+		Factions.Id.DIAMONDS: 1,
+	}
+	faction_score_recency = {
+		Factions.Id.CLUBS: 10,
+		Factions.Id.HEARTS: 20,
+		Factions.Id.DIAMONDS: 5,
+	}
+	_faction_score_recency_counter = 20
+	ending_round_triggered = false
+	round_number = 1
+	active_player_order = [1, 2]
+	action_turn_peer_id = 1
+	crib_owner_peer_id = 1
+	crib_resolver_peer_id = 1
+	_board_setup_complete = true
+	_board.reset()
+	_populate_tutorial_actions_board()
+
+	register_player(1, "You")
+	register_player(2, "Rival")
+	set_active_control_peer(1)
+
+	player_influence[1] = {
+		Factions.Id.CLUBS: 1,
+		Factions.Id.HEARTS: 2,
+		Factions.Id.DIAMONDS: 0,
+	}
+	player_influence[2] = {
+		Factions.Id.CLUBS: 1,
+		Factions.Id.HEARTS: 1,
+		Factions.Id.DIAMONDS: 1,
+	}
+	player_coins[1] = 6
+	player_coins[2] = 6
+	action_points[1] = 3
+	action_points[2] = 3
+
+	show_hands[1] = [
+		_tutorial_card("hearts", "5"),
+		_tutorial_card("clubs", "5"),
+		_tutorial_card("hearts", "3"),
+		_tutorial_card("diamonds", "4"),
+	]
+	cut_card = _tutorial_card("hearts", "2")
+
+	crib = [
+		_tutorial_card("hearts", "7"),
+		_tutorial_card("clubs", "6"),
+		_tutorial_card("diamonds", "9"),
+		_tutorial_card("clubs", "10"),
+	]
+
+	_apply_faction_scores_state(faction_scores, faction_score_recency)
+	_apply_influence(player_influence)
+	_broadcast_coins()
+	_apply_action_points(action_points)
+	_broadcast_board()
+	cut_card_updated.emit(cut_card)
+	show_hands_updated.emit()
+	_set_phase(Phase.SPEND_ACTIONS)
+	_broadcast_crib_resolution_state(crib.duplicate(true), end_crib_resolved.duplicate(true), crib_owner_peer_id)
+	_broadcast_message("Tutorial: Actions & Influence")
+
+
+func set_tutorial_phase(phase: Phase) -> void:
+	if not tutorial_mode:
+		return
+	_set_phase(phase)
+	if phase == Phase.RESOLVE_CRIB:
+		_broadcast_crib_resolution_state(
+			crib.duplicate(true),
+			end_crib_resolved.duplicate(true),
+			crib_owner_peer_id
+		)
+	elif phase == Phase.SHOW_HANDS:
+		show_hands_updated.emit()
+
+
+func _tutorial_card(suit: String, rank: String) -> Dictionary:
+	var value := 10
+	if rank.is_valid_int():
+		value = int(rank)
+	return {
+		"suit": suit,
+		"rank": rank,
+		"value": value,
+		"faction": Factions.from_suit(suit),
+	}
+
+
+func _populate_tutorial_board() -> void:
+	_board.hexes[0]["cubes"][Factions.Id.HEARTS] = 4
+	_board.hexes[0]["cubes"][Factions.Id.CLUBS] = 1
+	_board.hexes[1]["cubes"][Factions.Id.HEARTS] = 1
+	_board.hexes[2]["cubes"][Factions.Id.HEARTS] = 1
+	_board.hexes[2]["cubes"][Factions.Id.CLUBS] = 1
+	_board.hexes[3]["cubes"][Factions.Id.HEARTS] = 1
+	_board.hexes[4]["cubes"][Factions.Id.CLUBS] = 2
+	_board.hexes[5]["cubes"][Factions.Id.DIAMONDS] = 1
+	_board.hexes[5]["cubes"][Factions.Id.HEARTS] = 1
+	_board.hexes[6]["cubes"][Factions.Id.CLUBS] = 2
+	_board.hexes[7]["cubes"][Factions.Id.DIAMONDS] = 1
+	_board.hexes[8]["cubes"][Factions.Id.CLUBS] = 1
+
+
+func _populate_tutorial_actions_board() -> void:
+	_board.hexes[0]["cubes"][Factions.Id.HEARTS] = 3
+	_board.hexes[0]["cubes"][Factions.Id.CLUBS] = 1
+	_board.hexes[2]["cubes"][Factions.Id.HEARTS] = 3
+	_board.hexes[2]["cubes"][Factions.Id.CLUBS] = 1
+	_board.hexes[3]["cubes"][Factions.Id.HEARTS] = 1
+	_board.hexes[5]["cubes"][Factions.Id.HEARTS] = 2
+	_board.hexes[5]["cubes"][Factions.Id.DIAMONDS] = 1
+	_board.hexes[6]["cubes"][Factions.Id.CLUBS] = 1
+
+
+func tutorial_demo_create_cart(faction_id: int, hex_index: int) -> bool:
+	if not tutorial_mode:
+		return false
+	if not _board.create_cart(faction_id, hex_index):
+		return false
+	_broadcast_board()
+	return true
+
+
+func tutorial_demo_push_with_cart(
+	faction_id: int,
+	from_hex: int,
+	to_hex: int,
+	cube_count: int = 1
+) -> Dictionary:
+	if not tutorial_mode:
+		return {"success": false}
+
+	_board.clear_last_cart_move()
+	var move_count := mini(
+		cube_count,
+		mini(
+			_board.cube_count_for(faction_id, from_hex),
+			_board.available_cube_space_for_move(faction_id, to_hex, from_hex, true)
+		)
+	)
+	if move_count <= 0:
+		return {"success": false}
+
+	if not _board.push(faction_id, from_hex, to_hex, move_count, true):
+		return {"success": false}
+
+	if move_count > 0:
+		_notify_action_cube_anim(faction_id, from_hex, to_hex, move_count)
+
+	var cart_moved := bool(_board.last_cart_move.get("moved", false))
+	var origin_hex := int(_board.last_cart_move.get("origin_hex", -1))
+	if cart_moved:
+		_notify_action_cart_anim(
+			int(_board.last_cart_move.get("faction", faction_id)),
+			int(_board.last_cart_move.get("from_hex", from_hex)),
+			int(_board.last_cart_move.get("to_hex", to_hex)),
+			origin_hex
+		)
+
+	var scored_points := 0
+	var cart_scores := _board.score_carts_on_goal()
+	for faction in Factions.ALL:
+		scored_points += int(cart_scores.get(faction, 0))
+	if scored_points > 0:
+		_apply_faction_scores(cart_scores)
+		if get_total_faction_score() >= RemixRules.ENDING_SCORE_TOTAL:
+			ending_round_triggered = true
+
+	_broadcast_board()
+	return {
+		"success": true,
+		"move_count": move_count,
+		"cart_moved": cart_moved,
+		"origin_hex": origin_hex,
+		"scored_points": scored_points,
+	}
+
+
 func is_ai_peer(peer_id: int) -> bool:
 	return vs_ai_mode and AiController.is_ai_peer(peer_id)
 
@@ -357,6 +654,7 @@ func prepare_online_session() -> void:
 	discard_ready.clear()
 	action_players_finished.clear()
 	_action_undo_stack.clear()
+	_crib_undo_stack.clear()
 	_board_setup_complete = false
 	_board.reset()
 	round_number = 0
@@ -518,6 +816,25 @@ func submit_undo_action() -> void:
 		request_undo_action()
 	else:
 		request_undo_action.rpc_id(1)
+
+
+func submit_undo_crib() -> void:
+	if multiplayer.is_server():
+		request_undo_crib()
+	else:
+		request_undo_crib.rpc_id(1)
+
+
+func can_undo_crib() -> bool:
+	if current_phase not in [Phase.SETUP_MINI_CRIB, Phase.RESOLVE_CRIB]:
+		return false
+	if _crib_undo_stack.is_empty():
+		return false
+	var resolver_peer := _active_crib_resolver_peer()
+	if resolver_peer <= 0 or not is_controlled_turn(resolver_peer):
+		return false
+	var snapshot: Dictionary = _crib_undo_stack[_crib_undo_stack.size() - 1]
+	return int(snapshot.get("peer_id", -1)) == resolver_peer
 
 
 func get_total_actions_for_peer(peer_id: int) -> int:
@@ -873,7 +1190,90 @@ func submit_crib_card_choice(card_index: int, accept: bool, hex_index: int) -> v
 		request_crib_card_choice.rpc_id(1, card_index, accept, hex_index)
 
 
+func submit_crib_reject_cube(card_index: int, hex_index: int) -> void:
+	if multiplayer.is_server():
+		request_crib_reject_cube(card_index, hex_index)
+	else:
+		request_crib_reject_cube.rpc_id(1, card_index, hex_index)
+
+
+func has_pending_crib_reject() -> bool:
+	return not pending_crib_reject.is_empty()
+
+
+func get_pending_crib_reject_card_index() -> int:
+	return int(pending_crib_reject.get("card_index", -1))
+
+
+func get_pending_crib_reject_placed_count() -> int:
+	return _variant_array(pending_crib_reject.get("hexes", [])).size()
+
+
+func rank_reject_hexes_have_space(card: Dictionary) -> bool:
+	var faction_id := _card_faction_id(card)
+	for hex_index in HexBoard.reject_hexes_for(card):
+		if _board.can_add_cubes(faction_id, hex_index, 1):
+			return true
+	return false
+
+
+func can_submit_crib_reject_cube(card_index: int, hex_index: int, peer_id: int = -1) -> bool:
+	if peer_id < 0:
+		peer_id = _action_peer_id()
+
+	var cards: Array = []
+	var resolved: Dictionary = {}
+
+	match current_phase:
+		Phase.SETUP_MINI_CRIB:
+			if int(peer_id) != int(mini_crib_resolving_peer):
+				return false
+			cards = mini_crib_cards
+			resolved = mini_crib_resolved
+		Phase.RESOLVE_CRIB:
+			if int(peer_id) != int(crib_owner_peer_id):
+				return false
+			cards = crib
+			resolved = end_crib_resolved
+			if is_ending_crib_resolution():
+				return false
+		_:
+			return false
+
+	var required_accepts := get_crib_required_accepts()
+	var total_cards := get_crib_resolution_target_count()
+
+	if card_index < 0 or card_index >= cards.size():
+		return false
+
+	var card: Dictionary = cards[card_index]
+	if not can_place_reject_cube_at(card, hex_index):
+		return false
+
+	if has_pending_crib_reject():
+		if int(pending_crib_reject.get("peer_id", -1)) != int(peer_id):
+			return false
+		if int(pending_crib_reject.get("card_index", -1)) != card_index:
+			return false
+		return true
+
+	if resolved.has(card_index):
+		return false
+
+	var accept_count := _count_accepts_in_resolved(resolved)
+	var remaining_unplaced := total_cards - resolved.size()
+	if accept_count > required_accepts:
+		return false
+	if accept_count + remaining_unplaced - 1 < required_accepts:
+		return false
+
+	var total_cubes := get_crib_reject_cube_count()
+	return get_total_crib_reject_cube_space(_card_faction_id(card)) >= total_cubes
+
+
 func can_submit_crib_card_choice(card_index: int, accept: bool, hex_index: int, peer_id: int = -1) -> bool:
+	if not accept:
+		return false
 	if peer_id < 0:
 		peer_id = _action_peer_id()
 
@@ -1051,6 +1451,7 @@ func start_new_round() -> void:
 	mini_crib_cards.clear()
 	mini_crib_resolved.clear()
 	end_crib_resolved.clear()
+	pending_crib_reject.clear()
 	crib_resolver_peer_id = 0
 	_mini_cribs_completed_for_round = false
 	local_crib_resolved.clear()
@@ -1079,7 +1480,7 @@ func start_new_round() -> void:
 	crib_owner_peer_id = dealer_peer_id
 	_broadcast_round_context()
 	if round_number == 1:
-		_begin_mini_crib_setup()
+		_begin_round_one_setup()
 	else:
 		_mini_cribs_completed_for_round = true
 		_set_phase(Phase.DEAL)
@@ -1164,12 +1565,21 @@ func request_pegging_play(hand_index: int) -> void:
 
 	var play_coins := 0
 	var play_events: Array = []
+	var played_last_card := _pegging_cards_played == PeggingPhase.MAX_CARDS_PLAYED
+	var played_to_thirty_one := pegging_total == PeggingRules.MAX_TOTAL
+
 	for event in PeggingRules.score_events(pegging_sequence, pegging_total):
+		if event == "thirty_one":
+			var thirty_one_coins := CribbageScoring.pegging_thirty_one_coins(_pegging_other_passed)
+			play_coins += thirty_one_coins
+			play_events.append(event)
+			grant_pegging_coins(peer_id, event, thirty_one_coins)
+			continue
 		play_coins += CribbageScoring.pegging_event_coins(event)
 		play_events.append(event)
 		grant_pegging_coins(peer_id, event)
 
-	if _pegging_cards_played == PeggingPhase.MAX_CARDS_PLAYED:
+	if played_last_card:
 		play_coins += CribbageScoring.pegging_event_coins("last_card")
 		play_events.append("last_card")
 		grant_pegging_coins(peer_id, "last_card")
@@ -1177,14 +1587,15 @@ func request_pegging_play(hand_index: int) -> void:
 	_log_pegging_card_play(peer_id, card, play_coins, play_events, pegging_total)
 	_note_pegging_play(peer_id)
 
-	var played_to_thirty_one := pegging_total == PeggingRules.MAX_TOTAL
-	var played_last_card := _pegging_cards_played == PeggingPhase.MAX_CARDS_PLAYED
-
-	if played_last_card or played_to_thirty_one:
+	if played_last_card:
 		_broadcast_pegging_state()
-		_schedule_pegging_count_pause(played_last_card)
-		if not played_last_card:
-			_send_local_hand(peer_id, hand)
+		_schedule_pegging_count_pause(true)
+		return
+
+	if played_to_thirty_one:
+		_broadcast_pegging_state()
+		_schedule_pegging_count_pause(false)
+		_send_local_hand(peer_id, hand)
 		return
 
 	_send_local_hand(peer_id, hand)
@@ -1244,11 +1655,11 @@ func _apply_turn_action_limits(peer_id: int) -> Dictionary:
 	return {"raw": raw, "clamped": clamped, "coin_delta": coin_delta}
 
 
-func grant_pegging_coins(peer_id: int, event_type: String) -> void:
+func grant_pegging_coins(peer_id: int, event_type: String, points_override: int = -1) -> void:
 	if not multiplayer.is_server():
 		return
 
-	var gained := CribbageScoring.pegging_event_coins(event_type)
+	var gained := points_override if points_override >= 0 else CribbageScoring.pegging_event_coins(event_type)
 	if gained <= 0:
 		return
 
@@ -1270,6 +1681,17 @@ func _apply_pegging_score(peer_id: int, event_type: String, points: int) -> void
 	pegging_score_scored.emit(peer_id, event_type, points)
 
 
+func _broadcast_shop_purchase_scored(buyer_peer_id: int, card: Dictionary, cost: int) -> void:
+	_apply_shop_purchase_scored(buyer_peer_id, card, cost)
+	_sync_shop_purchase_scored.rpc(buyer_peer_id, card, cost)
+
+
+func _apply_shop_purchase_scored(buyer_peer_id: int, card: Dictionary, cost: int) -> void:
+	if is_ai_search_silence():
+		return
+	shop_purchase_scored.emit(buyer_peer_id, card.duplicate(true), cost)
+
+
 @rpc("any_peer", "call_remote", "reliable")
 func request_shop_slot_purchase(slot_index: int) -> void:
 	if not multiplayer.is_server():
@@ -1278,11 +1700,6 @@ func request_shop_slot_purchase(slot_index: int) -> void:
 	var peer_id := _action_peer_id()
 	var block_reason := get_shop_slot_block_reason(peer_id, slot_index)
 	if not block_reason.is_empty():
-		if AiController.is_ai_peer(peer_id) and not is_ai_search_silence():
-			print(
-				"[AI Shop] Purchase blocked | peer=%d slot=%d coins=%d reason=%s"
-				% [peer_id, slot_index, int(player_coins.get(peer_id, 0)), block_reason]
-			)
 		_broadcast_message(block_reason)
 		return
 
@@ -1320,17 +1737,7 @@ func request_shop_slot_purchase(slot_index: int) -> void:
 	_broadcast_coins()
 	_broadcast_shop_state()
 	_emit_undo_availability()
-
-	if AiController.is_ai_peer(peer_id) and not is_ai_search_silence():
-		print(
-			"[AI Shop] Purchased slot=%d for %d coins (%s %s)"
-			% [
-				slot_index,
-				cost,
-				effect,
-				Factions.name_for(faction_id) if faction_id in Factions.ALL else "—",
-			]
-		)
+	_broadcast_shop_purchase_scored(peer_id, card, cost)
 
 	var player_name: String = player_names.get(peer_id, "Player %d" % peer_id)
 	var card_label := CribbageDeck.card_label(card)
@@ -1696,6 +2103,30 @@ func request_undo_action() -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable")
+func request_undo_crib() -> void:
+	if not multiplayer.is_server():
+		return
+	if current_phase not in [Phase.SETUP_MINI_CRIB, Phase.RESOLVE_CRIB]:
+		return
+
+	var peer_id := _action_peer_id()
+	var resolver_peer := _active_crib_resolver_peer()
+	if peer_id != resolver_peer:
+		return
+	if _crib_undo_stack.is_empty():
+		return
+
+	var snapshot: Dictionary = _crib_undo_stack[_crib_undo_stack.size() - 1]
+	if int(snapshot.get("peer_id", -1)) != int(resolver_peer):
+		_clear_crib_undo_stack()
+		return
+
+	_crib_undo_stack.pop_back()
+	_restore_crib_undo_snapshot(snapshot)
+	_emit_crib_undo_availability()
+
+
+@rpc("any_peer", "call_remote", "reliable")
 func request_end_action_phase() -> void:
 	if not multiplayer.is_server():
 		return
@@ -1708,6 +2139,9 @@ func request_end_action_phase() -> void:
 	if _has_pending_shop_action(peer_id):
 		_broadcast_message("Complete your shop purchase action on the map first.")
 		return
+
+	if not is_ai_peer(peer_id):
+		save_game_snapshot()
 
 	action_players_finished[peer_id] = true
 	_clear_action_undo_stack()
@@ -1758,7 +2192,10 @@ func _next_action_player() -> int:
 
 func _begin_crib_resolution() -> void:
 	_clear_action_undo_stack()
+	_clear_crib_undo_stack()
+	_clear_pending_shop_action()
 	end_crib_resolved.clear()
+	pending_crib_reject.clear()
 	crib_resolver_peer_id = crib_owner_peer_id
 	_set_phase(Phase.RESOLVE_CRIB)
 	_broadcast_crib_resolution_state(crib.duplicate(true), end_crib_resolved, crib_owner_peer_id)
@@ -1770,13 +2207,73 @@ func _begin_crib_resolution() -> void:
 		)
 	else:
 		_broadcast_message(
-			"%s resolves the crib: accept 2 cards (remove cubes), reject 2 (place cubes)."
+			"%s resolves the crib: accept 2 cards (remove cubes), reject 2 (place 1 cube each on rank hexes)."
 			% player_names.get(crib_owner_peer_id, "Dealer")
 		)
 
 
 const MINI_CRIB_COUNT := 3
 const MINI_CRIB_SIZE := 2
+
+
+func _begin_round_one_setup() -> void:
+	active_player_order = _sorted_peer_ids()
+	_grant_starting_influence()
+	_mini_cribs_completed_for_round = true
+	_set_phase(Phase.DEAL)
+	_deal_cards()
+
+
+func _grant_starting_influence() -> void:
+	if get_player_count() != 2:
+		return
+
+	var peers := _sorted_peer_ids()
+	var peer_a := int(peers[0])
+	var peer_b := int(peers[1])
+
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+
+	var factions: Array = Factions.ALL.duplicate()
+	var solo_faction_index := rng.randi_range(0, factions.size() - 1)
+	var solo_faction := int(factions[solo_faction_index])
+	var pair_factions: Array = []
+	for faction_index in range(factions.size()):
+		if faction_index == solo_faction_index:
+			continue
+		pair_factions.append(int(factions[faction_index]))
+
+	var first_peer := peer_a
+	var second_peer := peer_b
+
+	_add_influence_for_peer(first_peer, int(pair_factions[0]))
+	_add_influence_for_peer(first_peer, int(pair_factions[1]))
+	_add_influence_for_peer(second_peer, solo_faction)
+	_broadcast_influence()
+
+	var first_name: String = player_names.get(first_peer, "Player %d" % first_peer)
+	var second_name: String = player_names.get(second_peer, "Player %d" % second_peer)
+	_broadcast_message(
+		"%s starts with 1 influence in %s and %s. %s starts with 1 influence in %s."
+		% [
+			first_name,
+			Factions.name_for(int(pair_factions[0])),
+			Factions.name_for(int(pair_factions[1])),
+			second_name,
+			Factions.name_for(solo_faction),
+		]
+	)
+
+
+func _add_influence_for_peer(peer_id: int, faction_id: int, amount: int = 1) -> void:
+	if not player_influence.has(peer_id):
+		player_influence[peer_id] = RemixRules.empty_influence()
+	var influence: Dictionary = RemixRules.normalize_faction_dict(
+		player_influence.get(peer_id, RemixRules.empty_influence())
+	)
+	influence[faction_id] = RemixRules.faction_dict_value(influence, faction_id) + amount
+	player_influence[peer_id] = influence
 
 
 func _begin_mini_crib_setup() -> void:
@@ -1788,8 +2285,10 @@ func _begin_mini_crib_setup() -> void:
 
 
 func _start_current_mini_crib() -> void:
+	_clear_crib_undo_stack()
 	mini_crib_cards.clear()
 	mini_crib_resolved.clear()
+	pending_crib_reject.clear()
 
 	for _i in range(MINI_CRIB_SIZE):
 		if _deck.is_empty():
@@ -1830,6 +2329,7 @@ func _advance_mini_crib() -> void:
 func _finish_mini_crib_setup() -> void:
 	mini_crib_cards.clear()
 	mini_crib_resolved.clear()
+	pending_crib_reject.clear()
 	mini_crib_resolving_peer = 0
 	crib_resolver_peer_id = 0
 	mini_crib_index = 0
@@ -1880,6 +2380,8 @@ func request_crib_card_choice(card_index: int, accept: bool, hex_index: int) -> 
 	if not can_submit_crib_card_choice(card_index, accept, hex_index, peer_id):
 		return
 
+	_record_crib_undo_snapshot(peer_id)
+
 	var cards: Array = []
 	var resolved: Dictionary = {}
 
@@ -1918,12 +2420,12 @@ func request_crib_card_choice(card_index: int, accept: bool, hex_index: int) -> 
 		player_supply.get(peer_id, RemixRules.empty_supply())
 	)
 
-	_apply_crib_card(card, accept, hex_index, influence, supply)
+	_apply_crib_card(card, accept, hex_index, influence, supply, peer_id)
 
 	resolved[card_index] = temp_resolved
 	player_influence[peer_id] = influence
 	player_supply[peer_id] = supply
-	_notify_crib_cube_anim(accept, hex_index, _card_faction_id(card), card_index, peer_id)
+	_notify_crib_cube_anim(accept, hex_index, _card_faction_id(card), card_index, peer_id, false)
 	_broadcast_influence()
 	_sync_supply.rpc(player_supply)
 	_broadcast_board()
@@ -1933,8 +2435,104 @@ func request_crib_card_choice(card_index: int, accept: bool, hex_index: int) -> 
 		resolver_peer = crib_owner_peer_id
 	_broadcast_crib_resolution_state(cards.duplicate(true), resolved, resolver_peer)
 
+	_emit_crib_undo_availability()
 	if resolved.size() >= total_cards and not is_ai_search_silence():
 		try_complete_crib_resolution()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func request_crib_reject_cube(card_index: int, hex_index: int) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := _action_peer_id()
+	if not can_submit_crib_reject_cube(card_index, hex_index, peer_id):
+		return
+
+	_record_crib_undo_snapshot(peer_id)
+
+	var cards: Array = []
+	var resolved: Dictionary = {}
+
+	match current_phase:
+		Phase.SETUP_MINI_CRIB:
+			if int(peer_id) != int(mini_crib_resolving_peer):
+				return
+			cards = mini_crib_cards
+			resolved = mini_crib_resolved
+		Phase.RESOLVE_CRIB:
+			if int(peer_id) != int(crib_owner_peer_id):
+				return
+			cards = crib
+			resolved = end_crib_resolved
+		_:
+			return
+
+	var card: Dictionary = cards[card_index]
+	var faction_id := _card_faction_id(card)
+	_board.add_cube(faction_id, hex_index)
+
+	var hexes: Array = []
+	if has_pending_crib_reject():
+		hexes = _variant_array(pending_crib_reject.get("hexes", [])).duplicate()
+	else:
+		pending_crib_reject = {
+			"card_index": card_index,
+			"peer_id": peer_id,
+			"hexes": [],
+		}
+	hexes.append(hex_index)
+	pending_crib_reject["hexes"] = hexes
+
+	var total_cubes := get_crib_reject_cube_count()
+	var reject_complete := hexes.size() >= total_cubes
+	if reject_complete:
+		pending_crib_reject.clear()
+
+		resolved[card_index] = {
+			"card_index": card_index,
+			"accept": false,
+			"hex_index": int(hexes[0]),
+			"reject_hexes": hexes.duplicate(),
+		}
+		_broadcast_influence()
+
+	var resolver_peer := crib_resolver_peer_id
+	if current_phase == Phase.RESOLVE_CRIB:
+		resolver_peer = crib_owner_peer_id
+
+	_notify_crib_cube_anim(
+		false,
+		hex_index,
+		faction_id,
+		card_index,
+		peer_id,
+		reject_complete
+	)
+	_broadcast_board()
+	_broadcast_pending_crib_reject()
+	_emit_crib_undo_availability()
+
+	if reject_complete:
+		_broadcast_crib_resolution_state(cards.duplicate(true), resolved, resolver_peer)
+		if resolved.size() >= get_crib_resolution_target_count() and not is_ai_search_silence():
+			try_complete_crib_resolution()
+
+
+func _broadcast_pending_crib_reject() -> void:
+	if is_ai_search_silence():
+		return
+	pending_crib_reject_updated.emit()
+	if multiplayer.is_server():
+		_sync_pending_crib_reject.rpc(pending_crib_reject.duplicate(true))
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_pending_crib_reject(state: Dictionary) -> void:
+	if multiplayer.is_server():
+		return
+	pending_crib_reject = state.duplicate(true)
+	pending_crib_reject_updated.emit()
 
 
 func _count_accepts_in_resolved(resolved: Dictionary) -> int:
@@ -1994,7 +2592,7 @@ func get_crib_required_accepts() -> int:
 		Phase.SETUP_MINI_CRIB:
 			return 1
 		Phase.RESOLVE_CRIB:
-			return 1 if is_ending_crib_resolution() else 2
+			return 1 if is_ending_crib_resolution() else RemixRules.CRIB_REQUIRED_ACCEPTS
 	return 0
 
 
@@ -2051,14 +2649,20 @@ const DEBUG_SAVE_VERSION := 1
 const DEBUG_SAVE_PATH := "user://cribbage_remix_debug_save.json"
 
 
-func save_debug_snapshot(path: String = DEBUG_SAVE_PATH) -> bool:
-	if not offline_debug_mode:
+func save_game_snapshot(path: String = DEBUG_SAVE_PATH) -> bool:
+	if not multiplayer.is_server():
 		return false
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		return false
 	file.store_string(JSON.stringify(export_debug_snapshot(), "\t"))
 	return true
+
+
+func save_debug_snapshot(path: String = DEBUG_SAVE_PATH) -> bool:
+	if not offline_debug_mode:
+		return false
+	return save_game_snapshot(path)
 
 
 func load_debug_snapshot(path: String = DEBUG_SAVE_PATH) -> bool:
@@ -2104,6 +2708,7 @@ func export_debug_snapshot() -> Dictionary:
 		"mini_crib_cards": mini_crib_cards.duplicate(true),
 		"mini_crib_resolved": mini_crib_resolved.duplicate(true),
 		"end_crib_resolved": end_crib_resolved.duplicate(true),
+		"pending_crib_reject": pending_crib_reject.duplicate(true),
 		"crib_resolver_peer_id": crib_resolver_peer_id,
 		"mini_cribs_completed_for_round": _mini_cribs_completed_for_round,
 		"pegging_total": pegging_total,
@@ -2160,6 +2765,7 @@ func import_debug_snapshot(data: Dictionary, apply_views: bool = true) -> bool:
 	mini_crib_cards = _variant_array(data.get("mini_crib_cards", []))
 	mini_crib_resolved = _normalize_choice_dict(data.get("mini_crib_resolved", {}))
 	end_crib_resolved = _normalize_choice_dict(data.get("end_crib_resolved", {}))
+	pending_crib_reject = data.get("pending_crib_reject", {}).duplicate(true)
 	crib_resolver_peer_id = int(data.get("crib_resolver_peer_id", 0))
 	_mini_cribs_completed_for_round = bool(data.get("mini_cribs_completed_for_round", false))
 	pegging_total = int(data.get("pegging_total", 0))
@@ -2365,10 +2971,6 @@ func _influence_for_peer(peer_id: int, faction_id: int) -> int:
 
 
 func _deal_cards() -> void:
-	if round_number == 1 and not _mini_cribs_completed_for_round:
-		_begin_mini_crib_setup()
-		return
-
 	active_player_order = _sorted_peer_ids()
 	if _deck.is_empty():
 		_deck = CribbageDeck.create_shuffled_deck()
@@ -2456,18 +3058,23 @@ func _begin_show_hands() -> void:
 	_begin_action_phase()
 
 
-func _apply_pegging_pass(passing_peer: int) -> void:
+func _apply_pegging_pass(passing_peer: int) -> bool:
 	if _pegging_other_passed:
-		_reset_pegging_count()
-		_pegging_other_passed = false
-		pegging_turn_peer = PeggingPhase.opponent_peer(passing_peer, active_player_order)
-	else:
-		pegging_turn_peer = PeggingPhase.opponent_peer(passing_peer, active_player_order)
-		var passer_hand: Array = hands.get(int(passing_peer), [])
-		if not passer_hand.is_empty():
-			grant_pegging_coins(pegging_turn_peer, "go")
-			_log_pegging_go(pegging_turn_peer)
-		_pegging_other_passed = true
+		if is_ai_search_silence():
+			_reset_pegging_count()
+			_pegging_other_passed = false
+			pegging_turn_peer = PeggingPhase.opponent_peer(passing_peer, active_player_order)
+			return false
+		_schedule_pegging_count_pause(false)
+		return true
+
+	pegging_turn_peer = PeggingPhase.opponent_peer(passing_peer, active_player_order)
+	var passer_hand: Array = hands.get(int(passing_peer), [])
+	if not passer_hand.is_empty():
+		grant_pegging_coins(pegging_turn_peer, "go")
+		_log_pegging_go(pegging_turn_peer)
+	_pegging_other_passed = true
+	return false
 
 
 func _pegging_must_pass(peer_id: int) -> bool:
@@ -2491,6 +3098,7 @@ func _schedule_pegging_count_pause(finish_after: bool) -> void:
 			_finish_pegging()
 		else:
 			_pegging_other_passed = false
+			_log_pegging_count_reset()
 			_reset_pegging_count()
 			pegging_turn_peer = PeggingPhase.opponent_peer(
 				pegging_last_play_peer,
@@ -2511,7 +3119,9 @@ func _after_pegging_action() -> void:
 		safety += 1
 		if not _pegging_must_pass(int(pegging_turn_peer)):
 			break
-		_apply_pegging_pass(int(pegging_turn_peer))
+		if _apply_pegging_pass(int(pegging_turn_peer)):
+			_broadcast_pegging_state()
+			return
 		if _pegging_cards_played >= PeggingPhase.MAX_CARDS_PLAYED or _all_hands_empty():
 			_finish_pegging()
 			return
@@ -2771,6 +3381,8 @@ func _normalize_shop_slots(raw: Variant) -> Array:
 
 
 func _broadcast_shop_state() -> void:
+	if is_ai_search_silence():
+		return
 	var slots := _duplicate_shop_slots()
 	shop_updated.emit(slots)
 	_sync_shop_state.rpc(slots)
@@ -2881,6 +3493,17 @@ func _log_pegging_go(peer_id: int) -> void:
 		"kind": "go",
 		"peer_id": peer_id,
 		"coins": CribbageScoring.pegging_event_coins("go"),
+	})
+	_broadcast_pegging_history(false)
+
+
+func _log_pegging_count_reset() -> void:
+	if not multiplayer.is_server() or is_ai_search_silence():
+		return
+	if _current_pegging_log.is_empty():
+		return
+	_current_pegging_log.append({
+		"kind": "count_reset",
 	})
 	_broadcast_pegging_history(false)
 
@@ -3031,7 +3654,7 @@ func _validate_crib_choices(choices: Array) -> bool:
 			if not _can_apply_crib_card(card, false, board_hex):
 				return false
 
-	return accept_count == 2 and used_indices.size() == crib.size()
+	return accept_count == RemixRules.CRIB_REQUIRED_ACCEPTS and used_indices.size() == crib.size()
 
 
 func _card_faction_id(card: Dictionary) -> int:
@@ -3040,30 +3663,51 @@ func _card_faction_id(card: Dictionary) -> int:
 	return Factions.from_suit(str(card.get("suit", "clubs")))
 
 
+func get_opponent_peer_id(peer_id: int) -> int:
+	return PeggingPhase.opponent_peer(peer_id, active_player_order)
+
+
+func get_total_crib_reject_cube_space(faction_id: int) -> int:
+	var total := 0
+	for hex_index in range(HexBoard.HEX_COUNT):
+		total += _board.available_cube_space(faction_id, hex_index)
+	return total
+
+
+func get_crib_reject_cube_count() -> int:
+	return RemixRules.CRIB_REJECT_CUBE_COUNT
+
+
 func has_reject_hex_with_space(card: Dictionary) -> bool:
 	var faction_id := _card_faction_id(card)
-	for hex_index in HexBoard.reject_hexes_for(card):
-		if _board.can_add_cubes(faction_id, hex_index, 1):
-			return true
-	return false
+	return get_total_crib_reject_cube_space(faction_id) >= get_crib_reject_cube_count()
 
 
-func can_reject_crib_at(card: Dictionary, board_hex: int) -> bool:
+func can_place_reject_cube_at(card: Dictionary, board_hex: int) -> bool:
 	if board_hex < 0 or board_hex >= HexBoard.HEX_COUNT:
 		return false
 
 	var faction_id := _card_faction_id(card)
 	if not _board.can_add_cubes(faction_id, board_hex, 1):
 		return false
-	if has_reject_hex_with_space(card):
+
+	if rank_reject_hexes_have_space(card):
 		return HexBoard.is_valid_reject_placement(card, board_hex)
 	return true
+
+
+func can_reject_crib_at(card: Dictionary, board_hex: int) -> bool:
+	return can_place_reject_cube_at(card, board_hex)
 
 
 func get_valid_reject_hexes_for_card(card: Dictionary) -> Array:
 	var faction_id := _card_faction_id(card)
 	var hexes: Array = []
-	if has_reject_hex_with_space(card):
+
+	if not has_reject_hex_with_space(card):
+		return hexes
+
+	if rank_reject_hexes_have_space(card):
 		for hex_index in HexBoard.reject_hexes_for(card):
 			if _board.can_add_cubes(faction_id, hex_index, 1):
 				hexes.append(hex_index)
@@ -3075,10 +3719,10 @@ func get_valid_reject_hexes_for_card(card: Dictionary) -> Array:
 
 
 func _can_apply_crib_card(card: Dictionary, accept: bool, board_hex: int) -> bool:
+	if not accept:
+		return false
 	var faction_id := _card_faction_id(card)
-	if accept:
-		return _board.cube_count_for(faction_id, board_hex) > 0
-	return can_reject_crib_at(card, board_hex)
+	return _board.cube_count_for(faction_id, board_hex) > 0
 
 
 func _apply_crib_card(
@@ -3086,17 +3730,15 @@ func _apply_crib_card(
 	accept: bool,
 	board_hex: int,
 	influence: Dictionary,
-	supply: Dictionary
+	supply: Dictionary,
+	_resolver_peer_id: int
 ) -> void:
 	var faction_id := _card_faction_id(card)
-	if accept:
-		_board.remove_cube(faction_id, board_hex)
-		influence[faction_id] = (
-			RemixRules.faction_dict_value(influence, faction_id) + RemixRules.INFLUENCE_FROM_CRIB
-		)
-		supply[faction_id] = RemixRules.faction_dict_value(supply, faction_id) + 1
-	else:
-		_board.add_cube(faction_id, board_hex)
+	_board.remove_cube(faction_id, board_hex)
+	influence[faction_id] = (
+		RemixRules.faction_dict_value(influence, faction_id) + RemixRules.INFLUENCE_FROM_CRIB
+	)
+	supply[faction_id] = RemixRules.faction_dict_value(supply, faction_id) + 1
 
 
 func _can_apply_crib_choice(choice: Dictionary) -> bool:
@@ -3114,7 +3756,8 @@ func _can_apply_crib_choice(choice: Dictionary) -> bool:
 func _apply_crib_choice(
 	choice: Dictionary,
 	influence: Dictionary,
-	supply: Dictionary
+	supply: Dictionary,
+	resolver_peer_id: int
 ) -> void:
 	var card_index := int(choice.get("card_index", -1))
 	var card: Dictionary = crib[card_index]
@@ -3123,7 +3766,8 @@ func _apply_crib_choice(
 		bool(choice.get("accept", false)),
 		int(choice.get("hex_index", -1)),
 		influence,
-		supply
+		supply,
+		resolver_peer_id
 	)
 
 
@@ -3208,6 +3852,88 @@ func _clear_action_undo_stack() -> void:
 		return
 	_action_undo_stack.clear()
 	_emit_undo_availability()
+
+
+func _record_crib_undo_snapshot(peer_id: int) -> void:
+	if is_ai_search_silence():
+		return
+	if current_phase not in [Phase.SETUP_MINI_CRIB, Phase.RESOLVE_CRIB]:
+		return
+
+	var resolved: Dictionary = {}
+	match current_phase:
+		Phase.SETUP_MINI_CRIB:
+			resolved = mini_crib_resolved.duplicate(true)
+		Phase.RESOLVE_CRIB:
+			resolved = end_crib_resolved.duplicate(true)
+
+	_crib_undo_stack.append({
+		"peer_id": peer_id,
+		"phase": int(current_phase),
+		"board": _board.duplicate_state(),
+		"player_influence": _duplicate_player_faction_actions_from(player_influence),
+		"player_supply": _duplicate_player_faction_actions_from(player_supply),
+		"resolved": resolved,
+		"pending_crib_reject": pending_crib_reject.duplicate(true),
+	})
+
+
+func _restore_crib_undo_snapshot(snapshot: Dictionary) -> void:
+	_board.load_state(snapshot.get("board", []))
+	player_influence = _normalize_peer_faction_dicts(snapshot.get("player_influence", {}))
+	player_supply = _normalize_peer_faction_dicts(snapshot.get("player_supply", {}))
+	pending_crib_reject = snapshot.get("pending_crib_reject", {}).duplicate(true)
+
+	var resolved: Dictionary = snapshot.get("resolved", {}).duplicate(true)
+	var cards: Array = []
+	var resolver_peer := _active_crib_resolver_peer()
+	match current_phase:
+		Phase.SETUP_MINI_CRIB:
+			mini_crib_resolved = resolved
+			cards = mini_crib_cards.duplicate(true)
+			resolver_peer = mini_crib_resolving_peer
+		Phase.RESOLVE_CRIB:
+			end_crib_resolved = resolved
+			cards = crib.duplicate(true)
+			resolver_peer = crib_owner_peer_id
+
+	_apply_influence(player_influence)
+	_sync_supply.rpc(player_supply)
+	_broadcast_board()
+	_broadcast_pending_crib_reject()
+	_broadcast_crib_resolution_state(cards, resolved, resolver_peer)
+
+
+func _clear_crib_undo_stack() -> void:
+	if not multiplayer.is_server():
+		return
+	_crib_undo_stack.clear()
+	_emit_crib_undo_availability()
+
+
+func _active_crib_resolver_peer() -> int:
+	match current_phase:
+		Phase.SETUP_MINI_CRIB:
+			return int(mini_crib_resolving_peer)
+		Phase.RESOLVE_CRIB:
+			return int(crib_owner_peer_id)
+	return 0
+
+
+func _emit_crib_undo_availability() -> void:
+	if is_ai_search_silence():
+		return
+	var can_undo := can_undo_crib()
+	crib_undo_changed.emit(can_undo)
+	if multiplayer.is_server():
+		_sync_crib_undo_availability.rpc(can_undo)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_crib_undo_availability(can_undo: bool) -> void:
+	if multiplayer.is_server():
+		return
+	crib_undo_changed.emit(can_undo)
 
 
 func _spend_for_faction_action(peer_id: int, faction_id: int) -> Dictionary:
@@ -3332,6 +4058,7 @@ func try_complete_crib_resolution() -> void:
 	if not is_crib_resolution_complete():
 		return
 
+	_clear_crib_undo_stack()
 	match current_phase:
 		Phase.SETUP_MINI_CRIB:
 			_advance_mini_crib()
@@ -3400,6 +4127,8 @@ func _broadcast_board() -> void:
 func _ensure_board_setup() -> void:
 	if not NetworkManager.is_server():
 		return
+	if tutorial_mode:
+		return
 	if _board_setup_complete:
 		return
 	if get_player_count() < RemixRules.MIN_PLAYERS:
@@ -3407,6 +4136,7 @@ func _ensure_board_setup() -> void:
 
 	var setup_deck := CribbageDeck.create_shuffled_deck()
 	var drawn_cards := _board.setup_from_deck(setup_deck)
+	drawn_cards.append_array(setup_deck)
 	drawn_cards.shuffle()
 	_deck = drawn_cards
 	_board_setup_complete = true
@@ -3630,17 +4360,39 @@ func _sync_pegging_score(peer_id: int, event_type: String, points: int) -> void:
 	_apply_pegging_score(peer_id, event_type, points)
 
 
+@rpc("authority", "call_remote", "reliable")
+func _sync_shop_purchase_scored(buyer_peer_id: int, card: Dictionary, cost: int) -> void:
+	if multiplayer.is_server():
+		return
+	_apply_shop_purchase_scored(buyer_peer_id, card, cost)
+
+
 func _notify_crib_cube_anim(
 	accept: bool,
 	hex_index: int,
 	faction_id: int,
 	card_index: int,
-	peer_id: int
+	peer_id: int,
+	reject_complete: bool = false
 ) -> void:
 	if is_ai_search_silence():
 		return
-	crib_cube_anim_requested.emit(accept, hex_index, faction_id, card_index, peer_id)
-	_sync_crib_cube_anim.rpc(accept, hex_index, faction_id, card_index, peer_id)
+	crib_cube_anim_requested.emit(
+		accept,
+		hex_index,
+		faction_id,
+		card_index,
+		peer_id,
+		reject_complete
+	)
+	_sync_crib_cube_anim.rpc(
+		accept,
+		hex_index,
+		faction_id,
+		card_index,
+		peer_id,
+		reject_complete
+	)
 
 
 func _notify_action_cube_anim(
@@ -3673,11 +4425,19 @@ func _sync_crib_cube_anim(
 	hex_index: int,
 	faction_id: int,
 	card_index: int,
-	peer_id: int
+	peer_id: int,
+	reject_complete: bool = false
 ) -> void:
 	if multiplayer.is_server():
 		return
-	crib_cube_anim_requested.emit(accept, hex_index, faction_id, card_index, peer_id)
+	crib_cube_anim_requested.emit(
+		accept,
+		hex_index,
+		faction_id,
+		card_index,
+		peer_id,
+		reject_complete
+	)
 
 
 @rpc("authority", "call_remote", "reliable")

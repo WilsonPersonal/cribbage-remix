@@ -26,6 +26,7 @@ const WINNER_POPUP_WIDTH := 520.0
 @onready var start_round_button: Button = $HUD/Margin/VBox/StartRoundButton
 @onready var end_shop_button: Button = $HUD/Margin/VBox/EndShopButton
 @onready var end_actions_button: Button = $HUD/Margin/VBox/EndActionsButton
+@onready var crib_undo_button: Button = $HUD/Margin/VBox/CribUndoButton
 @onready var shop_buttons: HBoxContainer = $HUD/Margin/VBox/ShopButtons
 @onready var buy_clubs_button: Button = $HUD/Margin/VBox/ShopButtons/BuyClubsButton
 @onready var buy_hearts_button: Button = $HUD/Margin/VBox/ShopButtons/BuyHeartsButton
@@ -58,10 +59,16 @@ const WINNER_POPUP_WIDTH := 520.0
 @onready var ai_action_history_overlay = $AiActionHistoryOverlay
 @onready var pegging_history_button: Button = $HUD/Margin/VBox/PeggingHistoryButton
 @onready var pegging_history_overlay = $PeggingHistoryOverlay
+@onready var tutorial_overlay = $TutorialOverlay
 
 var _selected_action_type: int = -1
+var _tutorial_active: bool = false
+var _tutorial_module_id: String = ""
+var _tutorial_cart_demo_running: bool = false
+var _tutorial_action_panel_layout: String = ""
 var _selected_source_hex: int = -1
 var _pegging_popup_count: int = 0
+var _shop_purchase_popup_count: int = 0
 var _winner_popup: Control = null
 var _winner_popup_timer: SceneTreeTimer = null
 var _winner_popup_token := 0
@@ -80,12 +87,16 @@ func _ready() -> void:
 	GameState.active_control_changed.connect(_on_active_control_changed)
 	GameState.pegging_state_updated.connect(_on_pegging_state_updated)
 	GameState.pegging_score_scored.connect(_on_pegging_score_scored)
+	GameState.shop_purchase_scored.connect(_on_shop_purchase_scored)
 	GameState.pegging_history_updated.connect(_on_pegging_history_updated)
 	GameState.board_updated.connect(_on_board_updated)
 	GameState.action_turn_updated.connect(_on_action_turn_updated)
 	GameState.action_history_changed.connect(_on_action_history_changed)
 	GameState.shop_action_pending_updated.connect(_on_shop_action_pending_updated)
 	GameState.crib_cube_anim_requested.connect(_on_crib_cube_anim_requested)
+	GameState.crib_undo_changed.connect(_on_crib_undo_changed)
+	GameState.crib_resolution_updated.connect(_on_crib_resolution_updated_for_ui)
+	GameState.pending_crib_reject_updated.connect(_on_pending_crib_reject_updated_for_ui)
 	GameState.action_cube_anim_requested.connect(_on_action_cube_anim_requested)
 	GameState.action_cart_anim_requested.connect(_on_action_cart_anim_requested)
 	GameState.lobby_updated.connect(_on_lobby_updated)
@@ -98,6 +109,7 @@ func _ready() -> void:
 	start_round_button.pressed.connect(_on_start_round_pressed)
 	end_shop_button.pressed.connect(_on_end_shop_pressed)
 	end_actions_button.pressed.connect(_on_end_actions_pressed)
+	crib_undo_button.pressed.connect(_on_crib_undo_pressed)
 	buy_clubs_button.pressed.connect(_on_buy_clubs_pressed)
 	buy_hearts_button.pressed.connect(_on_buy_hearts_pressed)
 	buy_diamonds_button.pressed.connect(_on_buy_diamonds_pressed)
@@ -128,17 +140,21 @@ func _ready() -> void:
 	diamonds_faction_button.pressed.connect(func() -> void: _on_shop_faction_picked(Factions.Id.DIAMONDS))
 
 	if NetworkManager.is_offline_debug():
-		offline_bar.visible = true
-		if GameState.pending_vs_ai:
+		offline_bar.visible = not GameState.tutorial_mode
+		var tutorial_module := TutorialManager.consume_pending_module()
+		if not tutorial_module.is_empty():
+			_configure_tutorial_session(tutorial_module)
+		elif GameState.pending_vs_ai:
 			GameState.pending_vs_ai = false
 			GameState.setup_offline_vs_ai("You", "AI")
 			switch_player_button.visible = false
 			control_peer_label.text = "Playing vs AI"
 			ai_history_button.visible = true
+			call_deferred("_auto_start_offline_round")
 		else:
 			GameState.setup_offline_session("Player 1", "Player 2")
 			ai_history_button.visible = false
-		call_deferred("_auto_start_offline_round")
+			call_deferred("_auto_start_offline_round")
 	else:
 		offline_bar.visible = false
 		call_deferred("_register_online_players")
@@ -152,6 +168,301 @@ func _ready() -> void:
 	resized.connect(_apply_layout)
 	call_deferred("_apply_layout")
 	_refresh_ui()
+	_update_crib_undo_button()
+
+
+func _configure_tutorial_session(module_id: String) -> void:
+	_tutorial_module_id = module_id
+	match module_id:
+		TutorialManager.MODULE_HOW_TO_WIN:
+			GameState.setup_tutorial_how_to_win()
+			phase_label.text = "Tutorial: How to Win"
+			status_label.text = "Follow the prompts to learn how the game is won."
+		TutorialManager.MODULE_ACTIONS_AND_INFLUENCE:
+			GameState.setup_tutorial_actions_and_influence()
+			phase_label.text = "Tutorial: Actions & Influence"
+			status_label.text = "Learn how actions and crib choices affect the map."
+	_apply_tutorial_ui_baseline()
+	call_deferred("_start_tutorial_module", module_id)
+
+
+func _apply_tutorial_ui_baseline() -> void:
+	card_panel.visible = false
+	shop_panel.visible = false
+	action_panel.visible = false
+	action_scoring_panel.visible = false
+	show_action_scoring_button.visible = false
+	end_actions_button.visible = false
+	crib_undo_button.visible = false
+	pegging_history_button.visible = false
+	start_round_button.visible = false
+	offline_bar.visible = false
+	board.set_action_selection(-1, [])
+	card_panel.clear_crib_hex_highlights()
+	_tutorial_action_panel_layout = ""
+	_selected_action_type = -1
+
+
+func _start_tutorial_module(module_id: String) -> void:
+	_tutorial_active = true
+	_apply_layout()
+	_refresh_ui()
+	influence_display.refresh()
+	var steps: Array = TutorialManager.get_module_steps(module_id)
+	if steps.is_empty():
+		return
+	if tutorial_overlay.finished.is_connected(_on_tutorial_finished):
+		tutorial_overlay.finished.disconnect(_on_tutorial_finished)
+	if tutorial_overlay.step_action_requested.is_connected(_on_tutorial_step_action):
+		tutorial_overlay.step_action_requested.disconnect(_on_tutorial_step_action)
+	if tutorial_overlay.step_shown.is_connected(_on_tutorial_step_shown):
+		tutorial_overlay.step_shown.disconnect(_on_tutorial_step_shown)
+	tutorial_overlay.finished.connect(_on_tutorial_finished, CONNECT_ONE_SHOT)
+	tutorial_overlay.step_action_requested.connect(_on_tutorial_step_action)
+	tutorial_overlay.step_shown.connect(_on_tutorial_step_shown)
+	tutorial_overlay.start(steps, Callable(self, "_resolve_tutorial_target"))
+
+
+func _on_tutorial_step_shown(_step_index: int, step: Dictionary) -> void:
+	if not _tutorial_active:
+		return
+	if _tutorial_module_id != TutorialManager.MODULE_ACTIONS_AND_INFLUENCE:
+		return
+
+	var ui_mode := str(step.get("ui_mode", ""))
+	match ui_mode:
+		"show_hands":
+			GameState.set_tutorial_phase(GameState.Phase.SPEND_ACTIONS)
+			card_panel.visible = true
+			action_scoring_panel.visible = false
+			show_action_scoring_button.visible = true
+			show_action_scoring_button.text = "Show action scoring"
+			_selected_action_type = ActionSystem.Type.PUSH
+			_tutorial_action_panel_layout = "hand_intro"
+			_apply_tutorial_hand_intro_action_panel()
+			card_panel.refresh_show_hand_display()
+		"actions":
+			card_panel.visible = false
+			action_scoring_panel.visible = false
+			show_action_scoring_button.visible = false
+			GameState.set_tutorial_phase(GameState.Phase.SPEND_ACTIONS)
+			_tutorial_action_panel_layout = "actions"
+			action_panel.visible = true
+			_selected_action_type = ActionSystem.Type.PUSH
+			_update_shop_action_panel()
+		"board":
+			card_panel.visible = false
+			action_panel.visible = false
+			action_scoring_panel.visible = false
+			GameState.set_tutorial_phase(GameState.Phase.SPEND_ACTIONS)
+		"crib_accept", "crib_reject":
+			action_panel.visible = false
+			action_scoring_panel.visible = false
+			card_panel.visible = true
+			GameState.set_tutorial_phase(GameState.Phase.RESOLVE_CRIB)
+		_:
+			_apply_tutorial_ui_baseline()
+
+	_apply_tutorial_board_highlight(str(step.get("board_highlight", "")))
+	_apply_layout()
+
+
+func _apply_tutorial_hand_intro_action_panel() -> void:
+	action_panel.visible = true
+	actions_left_big_label.visible = true
+	action_help_label.visible = false
+	action_buttons.visible = false
+	faction_buttons.visible = false
+	undo_action_button.visible = false
+	clear_action_button.visible = false
+	cube_count_row.visible = true
+	cube_count_spin.visible = true
+	move_cart_check.visible = true
+
+
+func _tutorial_card_panel_height() -> float:
+	if not GameState.tutorial_mode:
+		return float(CARD_PANEL_HEIGHT)
+	if (
+		_tutorial_module_id == TutorialManager.MODULE_ACTIONS_AND_INFLUENCE
+		and card_panel.visible
+	):
+		return float(CARD_PANEL_HEIGHT)
+	return 0.0
+
+
+func _apply_tutorial_board_highlight(highlight: String) -> void:
+	board.set_action_selection(-1, [])
+	match highlight:
+		"dominance":
+			board.set_action_selection(2, [])
+		"push":
+			board.set_action_selection(2, [5])
+		"pull":
+			board.set_action_selection(5, [2])
+		"cart_spawn":
+			board.set_action_selection(0, [])
+		"crib_accept":
+			board.set_action_selection(2, [])
+			card_panel.set_crib_hex_highlights([2])
+		"crib_reject":
+			board.set_action_selection(3, [])
+			card_panel.set_crib_hex_highlights([3])
+		_:
+			card_panel.clear_crib_hex_highlights()
+
+
+func _resolve_tutorial_target(target_id: String) -> Variant:
+	match target_id:
+		"flash_legend":
+			board.flash_legend_panel()
+			return Rect2()
+		"clear_legend_flash":
+			board.clear_legend_panel_flash()
+			return Rect2()
+		"show_tutorial_winner":
+			_show_tutorial_winner_demo()
+			return Rect2()
+		"clear_tutorial_winner":
+			_clear_winner_popup()
+			return Rect2()
+		"return_to_main_menu":
+			_return_to_main_menu_from_tutorial()
+			return Rect2()
+		"influence_track":
+			return influence_display.get_global_rect()
+		"influence_hearts":
+			return influence_display.get_faction_dots_global_rect(1, Factions.Id.HEARTS)
+		"score_legend":
+			return board.get_legend_panel_global_rect()
+		"score_total":
+			return board.get_total_score_label_global_rect()
+		"cart_on_board":
+			return board.get_cart_on_board_global_rect()
+		"cart_spawn":
+			return board.get_hex_global_rect(0)
+		"cart_goal":
+			return board.get_hex_global_rect(3)
+		"action_scoring_panel":
+			return action_scoring_panel.get_global_rect()
+		"show_action_scoring_button":
+			return show_action_scoring_button.get_global_rect()
+		"player_hand":
+			return card_panel.get_hand_area_global_rect()
+		"cube_count_row":
+			return cube_count_row.get_global_rect()
+		"action_points_label":
+			return action_points_label.get_global_rect()
+		"action_panel":
+			return action_panel.get_global_rect()
+		"push_button":
+			return push_button.get_global_rect()
+		"pull_button":
+			return pull_button.get_global_rect()
+		"cart_button":
+			return cart_button.get_global_rect()
+		"dominance_hex":
+			return board.get_hex_global_rect(2)
+		"crib_accept_button":
+			return card_panel.get_crib_accept_button_global_rect()
+		"crib_reject_button":
+			return card_panel.get_crib_reject_button_global_rect()
+		"crib_panel":
+			return card_panel.get_crib_panel_global_rect()
+		_:
+			return Rect2()
+
+
+func _show_tutorial_winner_demo() -> void:
+	if _winner_popup != null and is_instance_valid(_winner_popup):
+		return
+	_on_winner_decided(1, Factions.Id.HEARTS, -1)
+
+
+func _on_tutorial_step_action(action: String, advance: Callable) -> void:
+	match action:
+		"play_hearts_cart_demo":
+			_play_tutorial_hearts_cart_demo(advance)
+		_:
+			advance.call()
+
+
+func _play_tutorial_hearts_cart_demo(advance: Callable) -> void:
+	if _tutorial_cart_demo_running:
+		advance.call()
+		return
+	_tutorial_cart_demo_running = true
+
+	const FACTION_ID := Factions.Id.HEARTS
+	const ORIGIN_HEX := 0
+	const MOVES := [
+		{"from": 0, "to": 2},
+		{"from": 2, "to": 5},
+		{"from": 5, "to": 3},
+	]
+
+	if not GameState.tutorial_demo_create_cart(FACTION_ID, ORIGIN_HEX):
+		_tutorial_cart_demo_running = false
+		advance.call()
+		return
+
+	await get_tree().create_timer(0.45).timeout
+
+	for move in MOVES:
+		var result: Dictionary = await _tutorial_push_with_cart(
+			FACTION_ID,
+			int(move["from"]),
+			int(move["to"]),
+			1
+		)
+		if int(result.get("scored_points", 0)) > 0:
+			await get_tree().create_timer(1.5).timeout
+
+	_tutorial_cart_demo_running = false
+	advance.call()
+
+
+func _tutorial_push_with_cart(
+	faction_id: int,
+	from_hex: int,
+	to_hex: int,
+	cube_count: int
+) -> Dictionary:
+	var result: Dictionary = GameState.tutorial_demo_push_with_cart(
+		faction_id,
+		from_hex,
+		to_hex,
+		cube_count
+	)
+	if not bool(result.get("success", false)):
+		return result
+
+	var move_count := int(result.get("move_count", 0))
+	if move_count > 0:
+		await get_tree().create_timer(
+			FlyingCube.DEFAULT_DURATION + float(maxi(move_count - 1, 0)) * 0.07 + 0.05
+		).timeout
+
+	if bool(result.get("cart_moved", false)):
+		await get_tree().create_timer(FlyingCart.DEFAULT_DURATION + 0.08).timeout
+
+	return result
+
+
+func _return_to_main_menu_from_tutorial() -> void:
+	if tutorial_overlay.finished.is_connected(_on_tutorial_finished):
+		tutorial_overlay.finished.disconnect(_on_tutorial_finished)
+	tutorial_overlay.stop()
+	_on_tutorial_finished()
+
+
+func _on_tutorial_finished() -> void:
+	_tutorial_active = false
+	_tutorial_module_id = ""
+	_apply_tutorial_ui_baseline()
+	_clear_winner_popup()
+	GameState.tutorial_mode = false
+	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
 
 
 func _apply_panel_style(panel: PanelContainer) -> void:
@@ -185,10 +496,10 @@ func _configure_hud_control_width(node: Node) -> void:
 
 func _apply_layout() -> void:
 	var main_right := MAIN_WIDTH_RATIO
-	var card_height := float(CARD_PANEL_HEIGHT)
-	var shop_height := float(SHOP_PANEL_HEIGHT)
+	var card_height := _tutorial_card_panel_height()
+	var shop_height := 0.0 if GameState.tutorial_mode else float(SHOP_PANEL_HEIGHT)
 
-	shop_panel.visible = true
+	shop_panel.visible = not GameState.tutorial_mode
 	shop_panel.set_anchors_preset(Control.PRESET_TOP_LEFT, true)
 	shop_panel.anchor_left = main_right - SHOP_PANEL_WIDTH_RATIO
 	shop_panel.anchor_top = 0.0
@@ -243,6 +554,9 @@ func _apply_layout() -> void:
 	pegging_history_overlay.z_as_relative = false
 	pegging_history_overlay.z_index = 50
 	move_child(pegging_history_overlay, get_child_count() - 1)
+	tutorial_overlay.z_as_relative = false
+	tutorial_overlay.z_index = 60
+	move_child(tutorial_overlay, get_child_count() - 1)
 
 	influence_display.refresh()
 
@@ -257,6 +571,36 @@ func _on_action_history_changed(can_undo: bool) -> void:
 
 func _on_undo_action_pressed() -> void:
 	GameState.submit_undo_action()
+
+
+func _on_crib_undo_pressed() -> void:
+	GameState.submit_undo_crib()
+
+
+func _on_crib_undo_changed(_can_undo: bool) -> void:
+	_update_crib_undo_button()
+
+
+func _on_crib_resolution_updated_for_ui(
+	_crib_cards: Array,
+	_resolved: Dictionary,
+	_resolver_peer: int
+) -> void:
+	_update_crib_undo_button()
+
+
+func _on_pending_crib_reject_updated_for_ui() -> void:
+	_update_crib_undo_button()
+
+
+func _update_crib_undo_button() -> void:
+	var in_crib := GameState.current_phase in [
+		GameState.Phase.SETUP_MINI_CRIB,
+		GameState.Phase.RESOLVE_CRIB,
+	]
+	var show_crib := in_crib and GameState.is_crib_resolver_for_control()
+	crib_undo_button.visible = show_crib
+	crib_undo_button.disabled = not GameState.can_undo_crib()
 
 
 func _on_shop_action_pending_updated(pending: Dictionary) -> void:
@@ -324,7 +668,8 @@ func _on_crib_cube_anim_requested(
 	hex_index: int,
 	faction_id: int,
 	card_index: int,
-	peer_id: int
+	peer_id: int,
+	_reject_complete: bool = false
 ) -> void:
 	var from_pos: Vector2
 	var to_pos: Vector2
@@ -557,6 +902,7 @@ func _on_ai_thinking_finished(_peer_id: int) -> void:
 func _on_active_control_changed(_peer_id: int) -> void:
 	_clear_action_selection()
 	_update_action_phase_ui()
+	_update_crib_undo_button()
 	_refresh_ui()
 
 
@@ -587,10 +933,33 @@ func _on_pegging_state_updated(_sequence: Array, total: int, turn_peer: int) -> 
 
 func _on_pegging_score_scored(peer_id: int, event_type: String, points: int) -> void:
 	var score_name := CribbageScoring.pegging_event_label(event_type)
-	_show_pegging_score_popup(peer_id, "%s: +%d" % [score_name, points])
+	_show_coin_area_popup(peer_id, "%s: +%d" % [score_name, points], _pegging_popup_count)
+	_pegging_popup_count += 1
 
 
-func _show_pegging_score_popup(peer_id: int, text: String) -> void:
+func _on_shop_purchase_scored(buyer_peer_id: int, card: Dictionary, cost: int) -> void:
+	if _is_local_shop_buyer(buyer_peer_id):
+		return
+	var card_label := CribbageDeck.card_label(card)
+	_show_coin_area_popup(
+		buyer_peer_id,
+		"Bought %s · %d" % [card_label, cost],
+		_shop_purchase_popup_count,
+		Color(0.82, 0.92, 1.0)
+	)
+	_shop_purchase_popup_count += 1
+
+
+func _is_local_shop_buyer(buyer_peer_id: int) -> bool:
+	return int(buyer_peer_id) == int(GameState.get_control_peer_id())
+
+
+func _show_coin_area_popup(
+	peer_id: int,
+	text: String,
+	stack_index: int,
+	font_color: Color = Color(1.0, 0.94, 0.55)
+) -> void:
 	var coin_rect: Rect2 = shop_panel.get_coin_display_rect_for_peer(peer_id)
 	var popup := Label.new()
 	popup.text = text
@@ -598,20 +967,19 @@ func _show_pegging_score_popup(peer_id: int, text: String) -> void:
 	popup.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	popup.autowrap_mode = TextServer.AUTOWRAP_OFF
 	popup.add_theme_font_size_override("font_size", 22)
-	popup.add_theme_color_override("font_color", Color(1.0, 0.94, 0.55))
+	popup.add_theme_color_override("font_color", font_color)
 	popup.modulate.a = 0.0
 	popup.custom_minimum_size.x = maxf(coin_rect.size.x, 96.0)
 	popup.size.x = popup.custom_minimum_size.x
 	popup.size.y = 24.0
 	popup.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	var stack_offset := float(_pegging_popup_count * 26)
+	var stack_offset := float(stack_index * 26)
 	popup.position = Vector2(
 		coin_rect.position.x + (coin_rect.size.x - popup.size.x) * 0.5,
 		coin_rect.position.y + coin_rect.size.y + 4.0 + stack_offset
 	)
 	popup.z_index = 25
 	add_child(popup)
-	_pegging_popup_count += 1
 
 	var start_y := popup.position.y
 	var tween := popup.create_tween()
@@ -622,10 +990,7 @@ func _show_pegging_score_popup(peer_id: int, text: String) -> void:
 	)
 	tween.set_parallel(false)
 	tween.tween_property(popup, "modulate:a", 0.0, 0.25).set_delay(0.45)
-	tween.tween_callback(func() -> void:
-		popup.queue_free()
-		_pegging_popup_count = maxi(0, _pegging_popup_count - 1)
-	)
+	tween.tween_callback(popup.queue_free)
 
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:
@@ -638,11 +1003,13 @@ func _on_phase_changed(_phase: GameState.Phase) -> void:
 
 	if not in_actions:
 		_clear_action_selection()
+		_shop_purchase_popup_count = 0
 
 	_update_action_phase_ui()
 	_update_pegging_hud(GameState.pegging_total, GameState.pegging_turn_peer)
 	_update_action_help()
 	_update_action_scoring_ui()
+	_update_crib_undo_button()
 	_apply_layout()
 	_refresh_ui()
 
@@ -1168,6 +1535,11 @@ func _effective_cube_max(_peer_id: int, faction_id: int, hex_index: int) -> int:
 
 
 func _update_cube_count_visibility() -> void:
+	if _tutorial_active and _tutorial_action_panel_layout == "hand_intro":
+		cube_count_row.visible = true
+		move_cart_check.visible = true
+		return
+
 	var show_cubes := _selected_action_type in [
 		ActionSystem.Type.PUSH,
 		ActionSystem.Type.PULL,
@@ -1296,6 +1668,10 @@ func _update_shop_dominance_highlights() -> void:
 
 
 func _update_shop_action_panel() -> void:
+	if _tutorial_active and _tutorial_action_panel_layout == "hand_intro":
+		_apply_tutorial_hand_intro_action_panel()
+		return
+
 	var in_actions := GameState.current_phase == GameState.Phase.SPEND_ACTIONS
 	var on_turn := GameState.is_action_turn_for_control()
 	if not in_actions or not on_turn:
@@ -1439,6 +1815,12 @@ func _refresh_ui() -> void:
 
 
 func _update_action_scoring_ui() -> void:
+	if _tutorial_active and _tutorial_action_panel_layout == "hand_intro":
+		show_action_scoring_button.visible = true
+		action_scoring_panel.visible = false
+		show_action_scoring_button.text = "Show action scoring"
+		return
+
 	var show_phase := GameState.current_phase in [
 		GameState.Phase.SHOW_HANDS,
 		GameState.Phase.SHOP,
@@ -1544,8 +1926,6 @@ func _phase_name(phase: GameState.Phase) -> String:
 	match phase:
 		GameState.Phase.WAITING:
 			return "Waiting for players"
-		GameState.Phase.SETUP_MINI_CRIB:
-			return "Mini crib setup"
 		GameState.Phase.DEAL:
 			return "Deal hands"
 		GameState.Phase.DISCARD_TO_CRIB:

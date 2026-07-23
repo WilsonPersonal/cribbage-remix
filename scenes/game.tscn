@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3 uid="uid://c0486osgjfvr7"]
+[gd_scene load_steps=12 format=3 uid="uid://c0486osgjfvr7"]
 
 [ext_resource type="Script" uid="uid://d0dflhdrjj0iw" path="res://scripts/ui/game.gd" id="1_game"]
 [ext_resource type="Script" uid="uid://mvvynadvyebw" path="res://scripts/ui/hex_board_view.gd" id="2_board"]
@@ -10,6 +10,7 @@
 [ext_resource type="Script" path="res://scripts/ui/ai_action_history_panel.gd" id="9_ai_action_history"]
 [ext_resource type="Script" path="res://scripts/ui/hex_board_mini_view.gd" id="10_hex_board_mini"]
 [ext_resource type="Script" path="res://scripts/ui/pegging_history_panel.gd" id="11_pegging_history"]
+[ext_resource type="Script" path="res://scripts/ui/tutorial_overlay.gd" id="12_tutorial_overlay"]
 
 [node name="Game" type="Control"]
 layout_mode = 3
@@ -333,6 +334,12 @@ layout_mode = 2
 visible = false
 text = "End Action Phase"
 
+[node name="CribUndoButton" type="Button" parent="HUD/Margin/VBox"]
+layout_mode = 2
+visible = false
+disabled = true
+text = "Undo Last Crib Choice"
+
 [node name="AiActionHistoryOverlay" type="Control" parent="."]
 visible = false
 layout_mode = 1
@@ -544,6 +551,17 @@ vertical_scroll_mode = 0
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 8
+
+[node name="TutorialOverlay" type="Control" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("12_tutorial_overlay")
 
 [node name="CardPlayPanel" parent="." instance=ExtResource("3_cards")]
 layout_mode = 1

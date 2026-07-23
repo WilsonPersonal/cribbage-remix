@@ -8,6 +8,8 @@ extends Control
 @onready var status_label: Label = $Panel/VBox/StatusLabel
 @onready var offline_button: Button = $Panel/VBox/OfflineDebugButton
 @onready var vs_ai_button: Button = $Panel/VBox/VsAiButton
+@onready var tutorial_button: Button = $Panel/VBox/TutorialButton
+@onready var tutorial_actions_button: Button = $Panel/VBox/TutorialActionsButton
 
 const GAME_SCENE := preload("res://scenes/game.tscn")
 
@@ -17,6 +19,8 @@ func _ready() -> void:
 	join_button.pressed.connect(_on_join_pressed)
 	offline_button.pressed.connect(_on_offline_pressed)
 	vs_ai_button.pressed.connect(_on_vs_ai_pressed)
+	tutorial_button.pressed.connect(_on_tutorial_pressed)
+	tutorial_actions_button.pressed.connect(_on_tutorial_actions_pressed)
 	NetworkManager.server_started.connect(_on_server_started)
 	NetworkManager.connected_to_server.connect(_on_connected_to_server)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
@@ -70,6 +74,22 @@ func _on_offline_pressed() -> void:
 func _on_vs_ai_pressed() -> void:
 	status_label.text = "Starting game vs AI..."
 	GameState.pending_vs_ai = true
+	NetworkManager.start_offline_debug()
+	_enter_game_offline()
+
+
+func _on_tutorial_pressed() -> void:
+	status_label.text = "Starting tutorial..."
+	GameState.pending_vs_ai = false
+	TutorialManager.queue_module(TutorialManager.MODULE_HOW_TO_WIN)
+	NetworkManager.start_offline_debug()
+	_enter_game_offline()
+
+
+func _on_tutorial_actions_pressed() -> void:
+	status_label.text = "Starting tutorial..."
+	GameState.pending_vs_ai = false
+	TutorialManager.queue_module(TutorialManager.MODULE_ACTIONS_AND_INFLUENCE)
 	NetworkManager.start_offline_debug()
 	_enter_game_offline()
 

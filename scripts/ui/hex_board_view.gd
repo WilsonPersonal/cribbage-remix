@@ -1073,6 +1073,51 @@ func _hex_top_baseline(center: Vector2) -> float:
 	return center.y - HEX_RADIUS * sqrt(3.0) * 0.5 + 18.0
 
 
+func get_legend_panel_global_rect() -> Rect2:
+	return Rect2(global_position + LEGEND_PANEL_RECT.position, LEGEND_PANEL_RECT.size)
+
+
+func get_total_score_label_global_rect() -> Rect2:
+	var pos := global_position + Vector2(28.0, LEGEND_TOTAL_SCORE_Y - 10.0)
+	return Rect2(pos, Vector2(LEGEND_PANEL_RECT.size.x - 36.0, 22.0))
+
+
+func get_hex_global_rect(hex_index: int) -> Rect2:
+	if hex_index < 0 or hex_index >= HexBoard.HEX_COUNT:
+		return Rect2()
+	var centers := _hex_centers()
+	if hex_index >= centers.size():
+		return Rect2()
+	var center: Vector2 = centers[hex_index]
+	var radius := HEX_RADIUS * 1.05
+	return Rect2(global_position + center - Vector2(radius, radius), Vector2(radius * 2.0, radius * 2.0))
+
+
+func get_cart_on_board_global_rect() -> Rect2:
+	return get_hex_global_rect(2)
+
+
+func flash_legend_panel() -> void:
+	_legend_panel_flash = 1.0
+	queue_redraw()
+	var tween := create_tween()
+	tween.tween_method(
+		func(strength: float) -> void:
+			_legend_panel_flash = strength
+			queue_redraw(),
+		1.0,
+		0.0,
+		1.4
+	)
+
+
+func clear_legend_panel_flash() -> void:
+	_legend_panel_flash = 0.0
+	for faction in Factions.ALL:
+		_legend_row_glow[faction] = 0.0
+	queue_redraw()
+
+
 func _hex_centers() -> Array:
 	var bounds := HexBoard.board_pixel_bounds(HEX_RADIUS)
 	var origin := Vector2(size.x * 0.5, size.y * 0.5) - bounds.get_center() + BOARD_OFFSET
