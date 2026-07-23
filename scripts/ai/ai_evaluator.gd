@@ -137,6 +137,20 @@ static func explain_move(move: Dictionary, context: AiContext, _use_lookahead: b
 	if move_kind in [AiMoveGenerator.KIND_PEGGING_PLAY, AiMoveGenerator.KIND_PEGGING_PASS]:
 		return _explain_pegging_move(move, before_ratings, before_ai, context)
 
+	if move_kind == AiMoveGenerator.KIND_CRIB_CHOICE:
+		return _explain_crib_choice_move(move, context, before_ratings, before_ai)
+
+	if not _use_lookahead:
+		return _build_explanation(
+			before_ratings,
+			before_ratings,
+			before_ai,
+			before_ai,
+			0.0,
+			factors,
+			context
+		)
+
 	var snapshot: Dictionary = GameState.export_debug_snapshot()
 	Search.apply_move(peer_id, move)
 	var after_ratings := PowerRating.compute_all(
@@ -235,12 +249,20 @@ static func _explain_pegging_move(
 			var new_total := GameState.pegging_total + int(card.get("value", 0))
 			var sequence: Array = GameState.pegging_sequence.duplicate(true)
 			sequence.append(card)
+			var is_last_pegging_card := (
+				GameState.get_total_pegging_cards_played() + 1 >= PeggingPhase.MAX_CARDS_PLAYED
+			)
 			for event in PeggingRules.score_events(sequence, new_total):
+				if event == "thirty_one":
+					total += float(
+						CribbageScoring.pegging_thirty_one_coins(
+							GameState.pegging_go_awarded_this_count()
+						)
+					)
+					continue
 				total += float(CribbageScoring.pegging_event_coins(event))
-			if GameState.get_total_pegging_cards_played() + 1 >= PeggingPhase.MAX_CARDS_PLAYED:
+			if is_last_pegging_card:
 				total += float(CribbageScoring.pegging_event_coins("last_card"))
-			if new_total == PeggingRules.MAX_TOTAL:
-				total += float(CribbageScoring.pegging_event_coins("thirty_one"))
 	elif kind == AiMoveGenerator.KIND_PEGGING_PASS:
 		total = 0.0
 
@@ -252,6 +274,44 @@ static func _explain_pegging_move(
 		total,
 		factors,
 		context
+	)
+
+
+static func _explain_crib_choice_move(
+	move: Dictionary,
+	context: AiContext,
+	before_ratings: Dictionary,
+	before_ai: Dictionary
+) -> Dictionary:
+	var factors: Array = []
+	var snapshot: Dictionary = GameState.export_debug_snapshot()
+	Search.apply_move(context.peer_id, move)
+
+	var after_ratings := PowerRating.compute_all(
+		GameState.get_board_state(),
+		GameState.faction_scores.duplicate()
+	)
+	var after_context := AiContext.from_game(context.peer_id)
+	var scored := PowerRating.compute_ai_power_delta(
+		before_ratings,
+		after_ratings,
+		context.peer_id,
+		context.opponent_id,
+		context,
+		after_context,
+		factors
+	)
+
+	Search.restore_snapshot(snapshot)
+
+	return _build_explanation(
+		before_ratings,
+		after_ratings,
+		before_ai,
+		scored.get("after", before_ai),
+		float(scored.get("total", 0.0)),
+		factors,
+		after_context
 	)
 
 

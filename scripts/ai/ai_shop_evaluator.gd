@@ -24,7 +24,7 @@ static func find_worthwhile_shop_sequence(peer_id: int, context: AiContext) -> A
 		_debug("peer=%d skipped: not in spend actions phase" % peer_id)
 		return []
 
-	var buy_moves: Array = MoveGenerator._generate_shop_buy_moves(peer_id)
+	var buy_moves: Array = _shop_buy_moves_by_cost(peer_id)
 	var coins := int(GameState.player_coins.get(peer_id, 0))
 	_debug(
 		"peer=%d evaluating shop | coins=%d legal_buys=%d"
@@ -75,6 +75,10 @@ static func find_worthwhile_shop_sequence(peer_id: int, context: AiContext) -> A
 		_debug("peer=%d no worthwhile shop sequence" % peer_id)
 		return []
 
+	if not sequence_completes_pending_shop(peer_id, best_sequence):
+		_debug("peer=%d rejected incomplete shop sequence" % peer_id)
+		return []
+
 	var result := best_sequence.duplicate(true)
 	result[0]["_shop_sequence_delta"] = best_delta
 	_debug(
@@ -87,6 +91,18 @@ static func find_worthwhile_shop_sequence(peer_id: int, context: AiContext) -> A
 		]
 	)
 	return result
+
+
+static func sequence_completes_pending_shop(peer_id: int, sequence: Array) -> bool:
+	if sequence.is_empty():
+		return false
+
+	var snapshot := GameState.export_debug_snapshot()
+	for move in sequence:
+		Search.apply_move(peer_id, move)
+	var complete := not GameState.has_pending_shop_action(peer_id)
+	GameState.import_debug_snapshot(snapshot, false)
+	return complete
 
 
 static func _debug(message: String) -> void:
@@ -106,7 +122,7 @@ static func evaluate_all_shop_buy_deltas(peer_id: int, context: AiContext) -> Ar
 		return []
 
 	var results: Array = []
-	for buy_move in MoveGenerator._generate_shop_buy_moves(peer_id):
+	for buy_move in _shop_buy_moves_by_cost(peer_id):
 		var cost := _buy_move_cost(buy_move)
 		var card: Dictionary = buy_move.get("card", {})
 		var candidate := _best_complete_sequence_for_buy(peer_id, buy_move, context)
@@ -128,9 +144,6 @@ static func evaluate_all_shop_buy_deltas(peer_id: int, context: AiContext) -> Ar
 			),
 		})
 
-	results.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return float(a.get("delta", 0.0)) > float(b.get("delta", 0.0))
-	)
 	return results
 
 
@@ -545,6 +558,18 @@ static func format_shop_power_delta(value: float) -> String:
 	if absf(value - roundf(value)) < 0.01:
 		return "%.0f" % value
 	return "%.1f" % value
+
+
+static func _shop_buy_moves_by_cost(peer_id: int) -> Array:
+	var buy_moves: Array = MoveGenerator._generate_shop_buy_moves(peer_id)
+	buy_moves.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var cost_a := _buy_move_cost(a)
+		var cost_b := _buy_move_cost(b)
+		if cost_a != cost_b:
+			return cost_a < cost_b
+		return int(a.get("slot_index", -1)) < int(b.get("slot_index", -1))
+	)
+	return buy_moves
 
 
 static func _buy_move_cost(buy_move: Dictionary) -> int:

@@ -2,7 +2,11 @@ class_name CribbageScoring
 extends RefCounted
 
 ## Show-hand scoring: each pair, 15, and run of 3+ grants one action.
-## Pegging coin rewards follow standard cribbage (pair 2, triple 6, quad 12, 15/31 = 2, go = 1, run = length).
+## Pegging coin rewards: pair 2, triple 6, quad 12, 15 = 2, 31 = 2 (or 1 after a go), go = 1, run = length.
+
+
+static func pegging_thirty_one_coins(after_go: bool) -> int:
+	return 1 if after_go else 2
 
 
 static func count_actions_from_cards(cards: Array, cut_card: Dictionary = {}) -> int:

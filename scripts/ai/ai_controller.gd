@@ -6,6 +6,9 @@ signal action_logged(entry: Dictionary)
 signal history_cleared
 
 const EXECUTE_DELAY_SEC := 1.0
+const MAX_CRIB_STALL_ATTEMPTS := 8
+const MAX_ACTION_TURN_LOOPS := 32
+const DEBUG_AI := false
 const MoveGenerator := preload("res://scripts/ai/ai_move_generator.gd")
 const TurnPlanner := preload("res://scripts/ai/ai_turn_planner.gd")
 const Search := preload("res://scripts/ai/ai_search.gd")
@@ -33,6 +36,7 @@ func _ready() -> void:
 	GameState.pegging_state_updated.connect(_on_pegging_state_updated)
 	GameState.action_turn_updated.connect(_on_action_turn_updated)
 	GameState.crib_resolution_updated.connect(_on_crib_resolution_updated)
+	GameState.pending_crib_reject_updated.connect(_on_pending_crib_reject_updated)
 	GameState.round_started.connect(_on_round_started)
 	GameState.crib_discards_updated.connect(_on_crib_discards_updated)
 	GameState.board_updated.connect(_on_board_updated)
@@ -386,7 +390,8 @@ func _append_board_hex(hexes: Array, hex_index: int) -> void:
 
 
 func _ai_debug(text: String) -> void:
-	print("[AI] %s" % text)
+	if DEBUG_AI:
+		print("[AI] %s" % text)
 
 
 func _on_phase_changed(_phase: GameState.Phase) -> void:
@@ -407,6 +412,15 @@ func _on_action_turn_updated(peer_id: int) -> void:
 
 func _on_crib_resolution_updated(_cards: Array, _resolved: Dictionary, resolver_peer: int) -> void:
 	_schedule_for_peer(resolver_peer)
+
+
+func _on_pending_crib_reject_updated() -> void:
+	if GameState.current_phase not in [GameState.Phase.SETUP_MINI_CRIB, GameState.Phase.RESOLVE_CRIB]:
+		return
+	var peer_id := GameState.crib_owner_peer_id
+	if GameState.current_phase == GameState.Phase.SETUP_MINI_CRIB:
+		peer_id = GameState.crib_resolver_peer_id
+	_schedule_for_peer(peer_id)
 
 
 func _on_round_started(_round_number: int) -> void:
@@ -438,7 +452,8 @@ func _on_shop_action_pending_updated(_pending: Dictionary) -> void:
 func _schedule_action_phase_turn() -> void:
 	if GameState.current_phase != GameState.Phase.SPEND_ACTIONS:
 		return
-	if _acting:
+	if _acting or _busy:
+		_schedule_pending = true
 		return
 	_schedule_for_peer(GameState.action_turn_peer_id)
 
@@ -494,13 +509,24 @@ func _think_and_act() -> void:
 
 func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 	var shop_purchased_this_turn := false
+	var turn_loops := 0
 	while _is_ai_spend_actions_turn(peer_id):
+		turn_loops += 1
+		if turn_loops > MAX_ACTION_TURN_LOOPS:
+			_ai_debug("Action turn loop limit reached — forcing shop recovery")
+			_force_pending_shop_recovery(peer_id)
+			break
+
+		var pending_shop := GameState.get_pending_shop_action()
 		_ai_debug(
-			"Planning action turn | total actions=%d points=%d coins=%d"
+			"Planning action turn | total actions=%d points=%d coins=%d pending_shop=%s effect=%s deploy=%d"
 			% [
 				GameState.get_total_actions_for_peer(peer_id),
 				GameState.get_action_points_for_peer(peer_id),
 				int(GameState.player_coins.get(peer_id, 0)),
+				str(GameState.has_pending_shop_action(peer_id)),
+				str(pending_shop.get("effect", "")),
+				GameState.get_pending_shop_deploy_faction(),
 			]
 		)
 
@@ -522,11 +548,42 @@ func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 		_ai_debug("Planned %d action(s)" % moves.size())
 
 		if moves.is_empty():
+			if GameState.has_pending_shop_action(peer_id):
+				_stall_attempts += 1
+				_ai_debug(
+					"Pending shop with no executable moves (stall %d, blocked=%d)"
+					% [_stall_attempts, _blocked_moves.size()]
+				)
+				var recovery_move := _first_pending_shop_move(peer_id)
+				if not recovery_move.is_empty():
+					_ai_debug("Executing pending shop recovery move | %s" % _describe_move(recovery_move))
+					await get_tree().create_timer(EXECUTE_DELAY_SEC).timeout
+					GameState.run_as_peer(peer_id, func() -> void:
+						_execute_move(recovery_move)
+					)
+					if not GameState.has_pending_shop_action(peer_id):
+						_stall_attempts = 0
+						continue
+				_force_pending_shop_recovery(peer_id)
+				if not _is_ai_spend_actions_turn(peer_id):
+					return
+				if GameState.has_pending_shop_action(peer_id):
+					if _stall_attempts >= TurnPlanner.MAX_STALL_ATTEMPTS:
+						_blocked_moves.clear()
+						_stall_attempts = 0
+					await get_tree().create_timer(EXECUTE_DELAY_SEC).timeout
+					continue
 			if bool(plan.get("should_end_turn", false)) or _should_end_action_turn(peer_id):
 				await get_tree().create_timer(EXECUTE_DELAY_SEC).timeout
 				_finish_action_turn(peer_id, "planned turn complete")
 			else:
-				_finish_action_turn(peer_id, "no planned moves")
+				_stall_attempts += 1
+				_ai_debug("No planned moves (stall %d)" % _stall_attempts)
+				if _stall_attempts >= TurnPlanner.MAX_STALL_ATTEMPTS:
+					_finish_action_turn(peer_id, "stall limit reached")
+					return
+				await get_tree().create_timer(EXECUTE_DELAY_SEC).timeout
+				continue
 			return
 
 		for step in range(moves.size()):
@@ -536,6 +593,12 @@ func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 			var move: Dictionary = moves[step]
 			if move.is_empty():
 				continue
+
+			if _is_invalid_pending_shop_step(peer_id, move):
+				_blocked_moves[_move_key(move)] = true
+				_stall_attempts += 1
+				_ai_debug("Skipped invalid pending shop step: %s" % _describe_move(move))
+				break
 
 			await get_tree().create_timer(EXECUTE_DELAY_SEC).timeout
 			if not _is_ai_spend_actions_turn(peer_id):
@@ -554,8 +617,9 @@ func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 
 			if not _action_state_changed(before, after):
 				_blocked_moves[_move_key(move)] = true
+				_stall_attempts += 1
 				_ai_debug("Move rejected during execution: %s" % _describe_move(move))
-				return
+				break
 
 		if bool(plan.get("should_end_turn", false)) or _should_end_action_turn(peer_id):
 			await get_tree().create_timer(EXECUTE_DELAY_SEC).timeout
@@ -564,29 +628,59 @@ func _execute_planned_spend_actions_turn(peer_id: int) -> void:
 
 
 func _execute_planned_crib_turn(peer_id: int) -> void:
+	var crib_blocked_moves: Dictionary = {}
+	var crib_stall_attempts := 0
+
+	_ai_debug(
+		"Crib turn start | resolved=%d/%d pending_reject=%s pending_shop=%s"
+		% [
+			_crib_resolved_count(),
+			_crib_total_count(),
+			str(GameState.has_pending_crib_reject()),
+			str(GameState.has_pending_shop_action(peer_id)),
+		]
+	)
+
 	while _is_crib_resolution_turn(peer_id):
 		if GameState.is_crib_resolution_complete():
 			break
 
+		var progress_before := _crib_progress_signature()
+
 		_begin_thinking(peer_id)
 		await get_tree().process_frame
 
-		var moves: Array = MoveGenerator.generate_moves(peer_id)
+		var moves: Array = _filter_blocked_crib_moves(
+			MoveGenerator.generate_moves(peer_id),
+			crib_blocked_moves
+		)
 		if moves.is_empty():
 			_end_thinking()
+			crib_stall_attempts += 1
 			_ai_debug(
-				"No crib moves available (%d/%d resolved)"
-				% [_crib_resolved_count(), _crib_total_count()]
+				"No crib moves available (%d/%d resolved, stall %d/%d)"
+				% [
+					_crib_resolved_count(),
+					_crib_total_count(),
+					crib_stall_attempts,
+					MAX_CRIB_STALL_ATTEMPTS,
+				]
 			)
-			break
+			if crib_stall_attempts >= MAX_CRIB_STALL_ATTEMPTS:
+				break
+			await get_tree().create_timer(EXECUTE_DELAY_SEC).timeout
+			continue
 
 		var context: AiContext = ContextBuilder.from_game(peer_id)
-		var decision: Dictionary = Evaluator.choose_move_decision(moves, context)
+		var decision: Dictionary = Evaluator.choose_move_decision(moves, context, false, false)
 		_end_thinking()
 
 		var move: Dictionary = decision.get("move", {})
 		if move.is_empty():
-			break
+			crib_stall_attempts += 1
+			if crib_stall_attempts >= MAX_CRIB_STALL_ATTEMPTS:
+				break
+			continue
 
 		move = move.duplicate(true)
 		move["_decision"] = decision
@@ -600,6 +694,32 @@ func _execute_planned_crib_turn(peer_id: int) -> void:
 		GameState.run_as_peer(peer_id, func() -> void:
 			_execute_move(move)
 		)
+
+		var progress_after := _crib_progress_signature()
+		if progress_after == progress_before:
+			crib_blocked_moves[_move_key(move)] = true
+			crib_stall_attempts += 1
+			_ai_debug("Crib move made no progress: %s" % _describe_move(move))
+			if crib_stall_attempts >= MAX_CRIB_STALL_ATTEMPTS:
+				break
+		else:
+			crib_stall_attempts = 0
+
+
+func _crib_progress_signature() -> String:
+	var pending := 0
+	if GameState.has_pending_crib_reject():
+		pending = GameState.get_pending_crib_reject_placed_count()
+	return "%d|%d" % [_crib_resolved_count(), pending]
+
+
+func _filter_blocked_crib_moves(moves: Array, blocked_moves: Dictionary) -> Array:
+	var filtered: Array = []
+	for move in moves:
+		if blocked_moves.has(_move_key(move)):
+			continue
+		filtered.append(move)
+	return filtered
 
 
 func _crib_resolved_count() -> int:
@@ -717,16 +837,30 @@ func _execute_move(move: Dictionary) -> void:
 		MoveGenerator.KIND_SHOP_KING_DEPLOY:
 			GameState.submit_shop_king_deploy(int(move.get("hex_index", -1)))
 		MoveGenerator.KIND_CRIB_CHOICE:
-			GameState.submit_crib_card_choice(
-				int(move.get("card_index", -1)),
-				bool(move.get("accept", false)),
-				int(move.get("hex_index", -1))
-			)
+			if bool(move.get("accept", false)):
+				GameState.submit_crib_card_choice(
+					int(move.get("card_index", -1)),
+					true,
+					int(move.get("hex_index", -1))
+				)
+			else:
+				GameState.submit_crib_reject_cube(
+					int(move.get("card_index", -1)),
+					int(move.get("hex_index", -1))
+				)
 		MoveGenerator.KIND_END_ACTIONS:
 			GameState.submit_end_action_phase()
 
 
 func _move_key(move: Dictionary) -> String:
+	if str(move.get("kind", "")) == MoveGenerator.KIND_CRIB_CHOICE:
+		return "%s|%d|%d|%d|%d" % [
+			MoveGenerator.KIND_CRIB_CHOICE,
+			int(move.get("card_index", -1)),
+			int(bool(move.get("accept", false))),
+			int(move.get("hex_index", -1)),
+			int(move.get("faction_id", -1)),
+		]
 	return "%s|%d|%d|%d|%d|%d|%d|%d" % [
 		str(move.get("kind", "")),
 		int(move.get("action_type", -1)),
@@ -807,11 +941,10 @@ func _finish_action_turn(peer_id: int, reason: String = "") -> void:
 	if not reason.is_empty():
 		_ai_debug("Ending turn: %s" % reason)
 	if GameState.has_pending_shop_action(peer_id):
-		if GameState.can_undo_action():
-			GameState.run_as_peer(peer_id, func() -> void:
-				GameState.submit_undo_action()
-			)
-			_ai_debug("Undid pending shop before ending")
+		GameState.run_as_peer(peer_id, func() -> void:
+			GameState.submit_undo_action()
+		)
+		_ai_debug("Undid pending shop before ending")
 		if GameState.has_pending_shop_action(peer_id):
 			_ai_debug("Cannot end turn while shop action is still pending")
 			return
@@ -844,6 +977,58 @@ func _action_stall_signature(peer_id: int) -> String:
 	]
 
 
+func _first_pending_shop_move(peer_id: int) -> Dictionary:
+	for move in MoveGenerator.generate_moves(peer_id):
+		if _blocked_moves.has(_move_key(move)):
+			continue
+		return move
+	return {}
+
+
+func _is_invalid_pending_shop_step(peer_id: int, move: Dictionary) -> bool:
+	if not GameState.has_pending_shop_action(peer_id):
+		return false
+
+	var kind := str(move.get("kind", ""))
+	if GameState.pending_shop_needs_faction_choice():
+		return kind != MoveGenerator.KIND_SHOP_DEPLOY_FACTION
+
+	match GameState.get_pending_shop_effect():
+		Shop.EFFECT_KING:
+			return kind != MoveGenerator.KIND_SHOP_KING_DEPLOY
+		Shop.EFFECT_JACK:
+			return kind != MoveGenerator.KIND_FACTION_ACTION
+	return false
+
+
+func _force_pending_shop_recovery(peer_id: int) -> void:
+	if not GameState.has_pending_shop_action(peer_id):
+		return
+
+	GameState.run_as_peer(peer_id, func() -> void:
+		GameState.submit_undo_action()
+	)
+	if not GameState.has_pending_shop_action(peer_id):
+		_blocked_moves.clear()
+		_stall_attempts = 0
+		_ai_debug("Recovered by undoing shop purchase")
+		return
+
+	var recovery_move := _first_pending_shop_move(peer_id)
+	if recovery_move.is_empty():
+		_blocked_moves.clear()
+		_ai_debug("No pending shop recovery moves remain")
+		return
+
+	GameState.run_as_peer(peer_id, func() -> void:
+		_execute_move(recovery_move)
+	)
+	if not GameState.has_pending_shop_action(peer_id):
+		_blocked_moves.clear()
+		_stall_attempts = 0
+		_ai_debug("Recovered pending shop with %s" % _describe_move(recovery_move))
+
+
 func _reset_stall_tracking() -> void:
 	_stall_attempts = 0
 	_stall_signature = ""
@@ -860,6 +1045,8 @@ func _current_turn_peer() -> int:
 			return GameState.pegging_turn_peer
 		GameState.Phase.SPEND_ACTIONS:
 			return GameState.action_turn_peer_id
-		GameState.Phase.SETUP_MINI_CRIB, GameState.Phase.RESOLVE_CRIB:
+		GameState.Phase.RESOLVE_CRIB:
+			return GameState.crib_owner_peer_id
+		GameState.Phase.SETUP_MINI_CRIB:
 			return GameState.crib_resolver_peer_id
 	return 0

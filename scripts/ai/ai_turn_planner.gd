@@ -81,6 +81,8 @@ static func plan_spend_actions_turn(
 					attempts = 0
 					if not _is_spend_actions_turn(peer_id):
 						break
+					if GameState.has_pending_shop_action(peer_id):
+						break
 					if GameState.get_total_actions_for_peer(peer_id) <= 0:
 						break
 					if (
@@ -103,12 +105,24 @@ static func plan_spend_actions_turn(
 			break
 
 		var context: AiContext = ContextBuilder.from_game(peer_id)
-		var decision: Dictionary = Evaluator.choose_move_decision(moves, context, true)
+		var require_positive := not GameState.has_pending_shop_action(peer_id)
+		var decision: Dictionary = Evaluator.choose_move_decision(moves, context, require_positive)
 		var move: Dictionary = decision.get("move", {})
 		if move.is_empty() or str(move.get("kind", "")) == MoveGenerator.KIND_END_ACTIONS:
-			if not moves.is_empty():
+			if GameState.has_pending_shop_action(peer_id) and not moves.is_empty():
+				move = moves[0]
+				decision = {
+					"method": "pending_shop_required",
+					"chosen_evaluator_score": 0.0,
+					"evaluator_rank": 1,
+					"evaluator_total": moves.size(),
+					"alternatives": [],
+				}
+			elif not moves.is_empty():
 				should_end = true
-			break
+				break
+			else:
+				break
 
 		var before := _snapshot_action_state(peer_id)
 		Search.apply_move(peer_id, move)
@@ -139,7 +153,9 @@ static func plan_spend_actions_turn(
 	ShopEvaluator.clear_evaluation_cache()
 
 	if _is_spend_actions_turn(peer_id):
-		if planned.is_empty():
+		if GameState.has_pending_shop_action(peer_id):
+			should_end = false
+		elif planned.is_empty():
 			should_end = true
 		elif GameState.get_total_actions_for_peer(peer_id) <= 0:
 			should_end = true
@@ -172,15 +188,21 @@ static func plan_crib_choices(peer_id: int) -> Array:
 			break
 
 		var resolved_before := _crib_resolved_count()
+		var pending_before := 0
+		if GameState.has_pending_crib_reject():
+			pending_before = GameState.get_pending_crib_reject_placed_count()
 		var context: AiContext = ContextBuilder.from_game(peer_id)
-		var decision: Dictionary = Evaluator.choose_move_decision(moves, context)
+		var decision: Dictionary = Evaluator.choose_move_decision(moves, context, false, false)
 		var move: Dictionary = decision.get("move", {})
 		if move.is_empty():
 			break
 
 		Search.apply_move(peer_id, move)
 		var resolved_after := _crib_resolved_count()
-		if resolved_after <= resolved_before:
+		var pending_after := 0
+		if GameState.has_pending_crib_reject():
+			pending_after = GameState.get_pending_crib_reject_placed_count()
+		if resolved_after <= resolved_before and pending_after <= pending_before:
 			break
 
 		var stored_move: Dictionary = move.duplicate(true)
@@ -246,7 +268,7 @@ static func _try_recover_stuck_turn(
 	if next_attempts > MAX_STALL_ATTEMPTS:
 		return {"recovered": false, "signature": current_signature, "attempts": next_attempts}
 
-	if not GameState.has_pending_shop_action(peer_id) or not GameState.can_undo_action():
+	if not GameState.has_pending_shop_action(peer_id):
 		return {"recovered": false, "signature": current_signature, "attempts": next_attempts}
 
 	GameState.run_as_peer(peer_id, func() -> void:

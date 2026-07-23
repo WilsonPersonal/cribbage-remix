@@ -6,6 +6,7 @@ const PANEL_BG_COLOR := Color(0.1, 0.12, 0.16, 0.98)
 const PANEL_BORDER_COLOR := Color(0.45, 0.55, 0.72, 0.55)
 const COIN_POSITIVE_COLOR := Color(1.0, 0.94, 0.55)
 const COIN_ZERO_COLOR := Color(0.65, 0.68, 0.74)
+const COUNT_RESET_DIVIDER_COLOR := Color(0.45, 0.55, 0.72, 0.55)
 const CardWidgetScene := preload("res://scenes/card_widget.tscn")
 const CARD_SIZE := Vector2(64, 92)
 
@@ -79,6 +80,8 @@ func _rebuild_display() -> void:
 
 	var totals: Dictionary = {}
 	for entry in log:
+		if str(entry.get("kind", "")) == "count_reset":
+			continue
 		var peer_id := int(entry.get("peer_id", -1))
 		if peer_id < 0:
 			continue
@@ -89,13 +92,33 @@ func _rebuild_display() -> void:
 		var player_name: String = GameState.player_names.get(peer_id, "Player %d" % peer_id)
 		summary_parts.append("%s: +%d coins" % [player_name, int(totals[peer_id])])
 
+	var play_count := 0
+	for entry in log:
+		if str(entry.get("kind", "")) != "count_reset":
+			play_count += 1
+
 	var phase_note := ""
 	if GameState.current_phase == GameState.Phase.PEGGING:
 		phase_note = " (in progress)"
-	_summary_label.text = "%d play(s)%s | %s" % [log.size(), phase_note, ", ".join(summary_parts)]
+	_summary_label.text = "%d play(s)%s | %s" % [play_count, phase_note, ", ".join(summary_parts)]
 
 	for entry in log:
+		if str(entry.get("kind", "")) == "count_reset":
+			_cards_row.add_child(_make_count_reset_divider())
+			continue
 		_cards_row.add_child(_make_entry_column(entry))
+
+
+func _make_count_reset_divider() -> Control:
+	var wrapper := VBoxContainer.new()
+	wrapper.custom_minimum_size = Vector2(16, CARD_SIZE.y + 56)
+	wrapper.alignment = BoxContainer.ALIGNMENT_CENTER
+
+	var line := ColorRect.new()
+	line.color = COUNT_RESET_DIVIDER_COLOR
+	line.custom_minimum_size = Vector2(2, CARD_SIZE.y + 40)
+	wrapper.add_child(line)
+	return wrapper
 
 
 func _make_entry_column(entry: Dictionary) -> Control:

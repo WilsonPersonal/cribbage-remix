@@ -2,9 +2,12 @@ class_name FactionPowerRating
 extends RefCounted
 
 const SCORE_MULTIPLIER := 100
-const CART_ONE_AWAY_FROM_FOREST := 70
-const CART_TWO_AWAY_FROM_FOREST := 45
-const CART_ON_MOUNTAIN := 25
+const CART_ONE_AWAY_FROM_FOREST_WITH_CUBE := 70
+const CART_ONE_AWAY_FROM_FOREST_ALONE := 35
+const CART_TWO_AWAY_FROM_FOREST_WITH_CUBE := 45
+const CART_TWO_AWAY_FROM_FOREST_ALONE := 20
+const CART_ON_MOUNTAIN_WITH_CUBE := 25
+const CART_ON_MOUNTAIN_ALONE := 10
 const DOMINANCE_WITH_OWN_CART := 10.0
 const MOUNTAIN_DOMINANCE := 5.0
 const PASTURE_DOMINANCE := 2.5
@@ -328,16 +331,28 @@ static func _compute_faction_power(board: HexBoard, faction_id: int, score: int)
 				cubes_on_dominated += float(cube_count) * CUBE_ON_DOMINATED_HEX
 
 	for hex_index in range(HexBoard.HEX_COUNT):
-		var mountain_cubes := board.cube_count_for(faction_id, hex_index)
-		for _origin in board.hexes[hex_index]["carts"].get(faction_id, []):
+		var hex_cubes := board.cube_count_for(faction_id, hex_index)
+		var carts: Array = board.hexes[hex_index]["carts"].get(faction_id, [])
+		var has_cube := hex_cubes >= 1
+		for _origin in carts:
 			var origin_hex := int(_origin)
 			var steps := board.cart_path_steps_to_goal(origin_hex, hex_index)
 			if steps == 1:
-				cart_one_away += CART_ONE_AWAY_FROM_FOREST
+				cart_one_away += (
+					CART_ONE_AWAY_FROM_FOREST_WITH_CUBE
+					if has_cube
+					else CART_ONE_AWAY_FROM_FOREST_ALONE
+				)
 			elif steps == 2:
-				cart_two_away += CART_TWO_AWAY_FROM_FOREST
-			if hex_index in HexBoard.MOUNTAIN_HEXES and mountain_cubes >= 1:
-				cart_on_mountain += CART_ON_MOUNTAIN
+				cart_two_away += (
+					CART_TWO_AWAY_FROM_FOREST_WITH_CUBE
+					if has_cube
+					else CART_TWO_AWAY_FROM_FOREST_ALONE
+				)
+			if hex_index in HexBoard.MOUNTAIN_HEXES:
+				cart_on_mountain += (
+					CART_ON_MOUNTAIN_WITH_CUBE if has_cube else CART_ON_MOUNTAIN_ALONE
+				)
 
 	var board_bonus := (
 		float(cart_one_away + cart_two_away + cart_on_mountain)

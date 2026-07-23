@@ -365,6 +365,30 @@ static func _generate_crib_moves(peer_id: int) -> Array:
 		and GameState.is_ending_crib_resolution()
 	)
 	var moves: Array = []
+
+	if GameState.has_pending_crib_reject():
+		var pending_card_index := GameState.get_pending_crib_reject_card_index()
+		if pending_card_index < 0 or pending_card_index >= cards.size():
+			return []
+		var pending_card: Dictionary = cards[pending_card_index]
+		var pending_faction_id := GameState.get_card_faction_id(pending_card)
+		for hex_index in GameState.get_valid_reject_hexes_for_card(pending_card):
+			if not GameState.can_submit_crib_reject_cube(
+				pending_card_index,
+				hex_index,
+				peer_id
+			):
+				continue
+			moves.append({
+				"kind": KIND_CRIB_CHOICE,
+				"peer_id": peer_id,
+				"card_index": pending_card_index,
+				"accept": false,
+				"hex_index": hex_index,
+				"faction_id": pending_faction_id,
+			})
+		return moves
+
 	var accept_count := _count_accepts(resolved)
 	for card_index in range(cards.size()):
 		if resolved.has(card_index):
@@ -396,9 +420,8 @@ static func _generate_crib_moves(peer_id: int) -> Array:
 			continue
 
 		for hex_index in GameState.get_valid_reject_hexes_for_card(card):
-			if not GameState.can_submit_crib_card_choice(
+			if not GameState.can_submit_crib_reject_cube(
 				card_index,
-				false,
 				hex_index,
 				peer_id
 			):

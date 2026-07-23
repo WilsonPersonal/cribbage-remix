@@ -5,6 +5,14 @@ const MoveGenerator := preload("res://scripts/ai/ai_move_generator.gd")
 
 
 static func move_key(move: Dictionary) -> String:
+	if str(move.get("kind", "")) == MoveGenerator.KIND_CRIB_CHOICE:
+		return "%s|%d|%d|%d|%d" % [
+			MoveGenerator.KIND_CRIB_CHOICE,
+			int(move.get("card_index", -1)),
+			int(bool(move.get("accept", false))),
+			int(move.get("hex_index", -1)),
+			int(move.get("faction_id", -1)),
+		]
 	return "%s|%d|%d|%d|%d|%d|%d|%d|%d" % [
 		str(move.get("kind", "")),
 		int(move.get("hand_index", -1)),
@@ -49,11 +57,17 @@ static func _apply_move_on_server(move: Dictionary) -> void:
 		MoveGenerator.KIND_SHOP_KING_DEPLOY:
 			GameState.submit_shop_king_deploy(int(move.get("hex_index", -1)))
 		MoveGenerator.KIND_CRIB_CHOICE:
-			GameState.submit_crib_card_choice(
-				int(move.get("card_index", -1)),
-				bool(move.get("accept", false)),
-				int(move.get("hex_index", -1))
-			)
+			if bool(move.get("accept", false)):
+				GameState.submit_crib_card_choice(
+					int(move.get("card_index", -1)),
+					true,
+					int(move.get("hex_index", -1))
+				)
+			else:
+				GameState.submit_crib_reject_cube(
+					int(move.get("card_index", -1)),
+					int(move.get("hex_index", -1))
+				)
 		MoveGenerator.KIND_END_ACTIONS:
 			GameState.submit_end_action_phase()
 
