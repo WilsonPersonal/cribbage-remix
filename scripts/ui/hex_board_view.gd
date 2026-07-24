@@ -18,6 +18,8 @@ const LEGEND_PANEL_RECT := Rect2(8.0, 8.0, 260.0, 88.0)
 const LEGEND_ROW_START_Y := 22.0
 const LEGEND_ROW_STEP := 16.0
 const LEGEND_TOTAL_SCORE_Y := LEGEND_ROW_START_Y + LEGEND_ROW_STEP * 3.0 + 4.0
+const CART_LANE_SPACING := 10.0
+const CART_ARROW_HEAD_LENGTH := 10.0
 
 var _board_state: Array = []
 var _faction_power: Dictionary = {}
@@ -152,16 +154,13 @@ func _should_hide_cart(
 	if faction_id != mask_faction or origin_hex != mask_origin:
 		return false
 
-	if hex_index == int(_action_cart_anim_mask.get("from_hex", -1)):
-		return true
-
-	if (
+	# Only hide the destination until the flying cart lands. The source hex is
+	# already empty in board state once the move applies, and hiding the spawn
+	# hex would incorrectly conceal a newly created cart there.
+	return (
 		hex_index == int(_action_cart_anim_mask.get("to_hex", -1))
 		and not bool(_action_cart_anim_mask.get("revealed", false))
-	):
-		return true
-
-	return false
+	)
 
 
 func _sync_board_state_from_game() -> void:
@@ -669,8 +668,8 @@ func _draw_spawn_arrows(centers: Array) -> void:
 
 func _draw_colored_arrow_head(tip: Vector2, direction: Vector2, color: Color) -> void:
 	var side := Vector2(-direction.y, direction.x)
-	var p1 := tip - direction * 10.0 + side * 5.0
-	var p2 := tip - direction * 10.0 - side * 5.0
+	var p1 := tip - direction * CART_ARROW_HEAD_LENGTH + side * 5.0
+	var p2 := tip - direction * CART_ARROW_HEAD_LENGTH - side * 5.0
 	draw_colored_polygon(PackedVector2Array([tip, p1, p2]), color)
 
 
@@ -727,11 +726,10 @@ func _draw_carts(centers: Array) -> void:
 				continue
 
 			var color: Color = Factions.COLORS[faction]
-			draw_line(arrow.start, arrow.end, color, 3.0)
-			_draw_colored_arrow_head(arrow.end, arrow.toward_goal, color)
-
-
-const CART_LANE_SPACING := 10.0
+			var toward_goal: Vector2 = arrow.toward_goal
+			var line_end: Vector2 = arrow.end - toward_goal * CART_ARROW_HEAD_LENGTH
+			draw_line(arrow.start, line_end, color, 3.0)
+			_draw_colored_arrow_head(arrow.end, toward_goal, color)
 
 
 func _cart_entries_for_hex(hex_index: int, carts: Dictionary) -> Array:

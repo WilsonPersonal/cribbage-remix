@@ -129,7 +129,8 @@ func _record_ai_action(peer_id: int, move: Dictionary) -> void:
 	var shop_card_evaluations: Array = []
 	if (
 		GameState.current_phase == GameState.Phase.SPEND_ACTIONS
-		and kind == MoveGenerator.KIND_SHOP_BUY
+		and not GameState.has_pending_shop_action(peer_id)
+		and kind in [MoveGenerator.KIND_SHOP_BUY, MoveGenerator.KIND_END_ACTIONS]
 	):
 		shop_card_evaluations = ShopEvaluator.evaluate_all_shop_buy_deltas(peer_id, context)
 	var queen_follow_up_summary := ""
@@ -155,7 +156,7 @@ func _record_ai_action(peer_id: int, move: Dictionary) -> void:
 		"alternatives": alternatives,
 		"before_board": before_board,
 		"after_board": after_board,
-		"highlight_hexes": board_snapshots.get("highlight_hexes", []),
+		"hex_highlights": board_snapshots.get("hex_highlights", {}),
 		"power_ratings_before": explanation.get("power_ratings_before", {}),
 		"power_ratings_after": explanation.get("power_ratings_after", {}),
 		"ai_power_before": explanation.get("ai_power_before", {}),
@@ -186,6 +187,10 @@ func _snapshot_decision(decision: Dictionary) -> Dictionary:
 		"chosen_evaluator_score": float(decision.get("chosen_evaluator_score", 0.0)),
 		"evaluator_rank": int(decision.get("evaluator_rank", 0)),
 		"evaluator_total": int(decision.get("evaluator_total", 0)),
+		"legal_move_total": int(
+			decision.get("legal_move_total", decision.get("evaluator_total", 0))
+		),
+		"positive_move_total": int(decision.get("positive_move_total", 0)),
 		"alternatives": [],
 	}
 	var alternatives: Array = []
@@ -216,6 +221,9 @@ func format_action_summary(
 		MoveGenerator.KIND_FACTION_ACTION:
 			parts.append(_action_type_label(int(move.get("action_type", -1))))
 			parts.append(_move_faction_name(move))
+			var path := HexBoard.format_map_move_path(move)
+			if not path.is_empty():
+				parts.append(path)
 		MoveGenerator.KIND_END_ACTIONS:
 			parts.append("End turn")
 			parts.append("—")
@@ -237,6 +245,9 @@ func format_action_summary(
 			parts.append(
 				Factions.name_for(int(move.get("faction_id", GameState.get_pending_shop_deploy_faction())))
 			)
+			var king_path := HexBoard.format_map_move_path(move)
+			if not king_path.is_empty():
+				parts.append(king_path)
 		MoveGenerator.KIND_PEGGING_PLAY:
 			parts.append("Peg")
 			parts.append("—")
@@ -342,7 +353,7 @@ func _capture_board_snapshots(peer_id: int, move: Dictionary) -> Dictionary:
 	var before_scores := GameState.faction_scores.duplicate()
 	var after_board := before_board
 	var after_scores := before_scores
-	var highlight_hexes := _move_board_hexes(move)
+	var hex_highlights := HexBoard.action_hex_highlights(move)
 
 	if _move_changes_board(move):
 		var snapshot := GameState.export_debug_snapshot()
@@ -356,7 +367,7 @@ func _capture_board_snapshots(peer_id: int, move: Dictionary) -> Dictionary:
 		"after_board": after_board,
 		"before_scores": before_scores,
 		"after_scores": after_scores,
-		"highlight_hexes": highlight_hexes,
+		"hex_highlights": hex_highlights,
 	}
 
 
@@ -367,26 +378,6 @@ func _move_changes_board(move: Dictionary) -> bool:
 		MoveGenerator.KIND_SHOP_KING_DEPLOY,
 		MoveGenerator.KIND_CRIB_CHOICE,
 	]
-
-
-func _move_board_hexes(move: Dictionary) -> Array:
-	var hexes: Array = []
-	match str(move.get("kind", "")):
-		MoveGenerator.KIND_FACTION_ACTION:
-			_append_board_hex(hexes, int(move.get("hex_index", -1)))
-			_append_board_hex(hexes, int(move.get("target_hex", -1)))
-		MoveGenerator.KIND_SHOP_KING_DEPLOY:
-			_append_board_hex(hexes, int(move.get("hex_index", -1)))
-		MoveGenerator.KIND_CRIB_CHOICE:
-			_append_board_hex(hexes, int(move.get("hex_index", -1)))
-	return hexes
-
-
-func _append_board_hex(hexes: Array, hex_index: int) -> void:
-	if hex_index < 0 or hex_index >= HexBoard.HEX_COUNT:
-		return
-	if hex_index not in hexes:
-		hexes.append(hex_index)
 
 
 func _ai_debug(text: String) -> void:
@@ -884,12 +875,14 @@ func _describe_move(move: Dictionary) -> String:
 		MoveGenerator.KIND_END_ACTIONS:
 			return "end action phase"
 		MoveGenerator.KIND_FACTION_ACTION:
-			var cart_note := "+cart " if bool(move.get("move_cart_also", false)) else ""
-			return "map %s%shex=%d target=%d faction=%d" % [
-				cart_note,
+			var cart_note := " +cart" if bool(move.get("move_cart_also", false)) else ""
+			var path := HexBoard.format_map_move_path(move)
+			if path.is_empty():
+				path = HexBoard.format_hex_labels(int(move.get("hex_index", -1)))
+			return "map %s%s %s faction=%d" % [
 				_action_type_name(int(move.get("action_type", -1))),
-				int(move.get("hex_index", -1)),
-				int(move.get("target_hex", -1)),
+				cart_note,
+				path,
 				int(move.get("faction_id", -1)),
 			]
 		MoveGenerator.KIND_SHOP_BUY:
@@ -897,13 +890,13 @@ func _describe_move(move: Dictionary) -> String:
 		MoveGenerator.KIND_SHOP_DEPLOY_FACTION:
 			return "shop deploy faction=%d" % int(move.get("faction_id", -1))
 		MoveGenerator.KIND_SHOP_KING_DEPLOY:
-			return "shop king deploy hex=%d" % int(move.get("hex_index", -1))
+			return "shop king deploy %s" % HexBoard.format_hex_labels(int(move.get("hex_index", -1)))
 		MoveGenerator.KIND_CRIB_CHOICE:
 			var choice := "accept" if bool(move.get("accept", false)) else "reject"
-			return "crib %s card=%d hex=%d" % [
+			return "crib %s card=%d hex=%s" % [
 				choice,
 				int(move.get("card_index", -1)),
-				int(move.get("hex_index", -1)),
+				HexBoard.format_hex_labels(int(move.get("hex_index", -1))),
 			]
 	return str(move.get("kind", "unknown"))
 

@@ -108,6 +108,7 @@ static func plan_spend_actions_turn(
 		var require_positive := not GameState.has_pending_shop_action(peer_id)
 		var decision: Dictionary = Evaluator.choose_move_decision(moves, context, require_positive)
 		var move: Dictionary = decision.get("move", {})
+		var best_score := float(decision.get("chosen_evaluator_score", 0.0))
 		if move.is_empty() or str(move.get("kind", "")) == MoveGenerator.KIND_END_ACTIONS:
 			if GameState.has_pending_shop_action(peer_id) and not moves.is_empty():
 				move = moves[0]
@@ -116,6 +117,8 @@ static func plan_spend_actions_turn(
 					"chosen_evaluator_score": 0.0,
 					"evaluator_rank": 1,
 					"evaluator_total": moves.size(),
+					"legal_move_total": moves.size(),
+					"positive_move_total": 0,
 					"alternatives": [],
 				}
 			elif not moves.is_empty():
@@ -123,6 +126,13 @@ static func plan_spend_actions_turn(
 				break
 			else:
 				break
+		elif (
+			require_positive
+			and best_score < Evaluator.MIN_POSITIVE_SCORE
+			and GameState.get_total_actions_for_peer(peer_id) > 0
+		):
+			should_end = true
+			break
 
 		var before := _snapshot_action_state(peer_id)
 		Search.apply_move(peer_id, move)

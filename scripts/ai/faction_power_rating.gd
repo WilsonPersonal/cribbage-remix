@@ -266,7 +266,11 @@ static func score_rating_change(
 			_add_factor(
 				factors,
 				"%s: power %s x influence %+d"
-				% [Factions.name_for(faction_id), _format_signed_power_value(delta), influence_diff],
+				% [
+					Factions.name_for(faction_id),
+					_format_signed_power_value(delta),
+					influence_diff,
+				],
 				contribution
 			)
 
@@ -284,7 +288,7 @@ static func _influence_diff(
 		and int(peer_id) == int(context.peer_id)
 		and int(opponent_id) == int(context.opponent_id)
 	):
-		return context.influence_diff(faction_id)
+		return context.actual_influence_diff(faction_id)
 	return (
 		AiContext.influence_for(peer_id, faction_id)
 		- AiContext.influence_for(opponent_id, faction_id)

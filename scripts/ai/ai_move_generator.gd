@@ -181,113 +181,123 @@ static func _generate_map_action_moves(peer_id: int, shop_effect: String = "") -
 			return []
 
 	var moves: Array = []
-	for hex_index in range(HexBoard.HEX_COUNT):
-		var faction_id := -1
-		if jack_mode:
-			faction_id = deploy_faction
-			if GameState.get_faction_cubes_on_hex(hex_index, faction_id) <= 0:
-				continue
-		else:
-			faction_id = GameState.get_controlling_faction(hex_index)
-			if faction_id < 0:
-				continue
+	if jack_mode:
+		for hex_index in GameState.get_hexes_with_faction_cubes(deploy_faction):
+			_append_hex_map_moves(moves, peer_id, deploy_faction, hex_index, true)
+		return moves
+
+	for faction_id in Factions.ALL:
 		if not GameState.player_can_afford_action(peer_id, faction_id):
 			continue
+		for hex_index in GameState.get_faction_dominance_hexes(faction_id):
+			if GameState.get_controlling_faction(hex_index) != faction_id:
+				continue
+			_append_hex_map_moves(moves, peer_id, faction_id, hex_index, false)
 
-		var available_cubes := GameState.get_faction_cubes_on_hex(hex_index, faction_id)
-		if available_cubes > 0:
-			for target_hex in GameState.get_adjacent_hexes(hex_index):
-				var move_count := mini(
+	return moves
+
+
+static func _append_hex_map_moves(
+	moves: Array,
+	peer_id: int,
+	faction_id: int,
+	hex_index: int,
+	jack_mode: bool
+) -> void:
+	var available_cubes := GameState.get_faction_cubes_on_hex(hex_index, faction_id)
+	if available_cubes > 0:
+		for target_hex in GameState.get_adjacent_hexes(hex_index):
+			var move_count := mini(
+				available_cubes,
+				GameState.get_available_cube_space_for_move(
+					faction_id,
+					target_hex,
+					hex_index,
+					false
+				)
+			)
+			if move_count > 0:
+				moves.append({
+					"kind": KIND_FACTION_ACTION,
+					"peer_id": peer_id,
+					"action_type": ActionSystem.Type.PUSH,
+					"hex_index": hex_index,
+					"target_hex": target_hex,
+					"cube_count": move_count,
+					"move_cart_also": false,
+					"faction_id": faction_id,
+				})
+			if not jack_mode and _can_advance_any_cart(faction_id, hex_index, target_hex):
+				var cart_move_count := mini(
 					available_cubes,
 					GameState.get_available_cube_space_for_move(
 						faction_id,
 						target_hex,
 						hex_index,
-						false
+						true
 					)
 				)
-				if move_count > 0:
+				if cart_move_count > 0:
 					moves.append({
 						"kind": KIND_FACTION_ACTION,
 						"peer_id": peer_id,
 						"action_type": ActionSystem.Type.PUSH,
 						"hex_index": hex_index,
 						"target_hex": target_hex,
-						"cube_count": move_count,
-						"move_cart_also": false,
+						"cube_count": cart_move_count,
+						"move_cart_also": true,
 						"faction_id": faction_id,
 					})
-				if not jack_mode and _can_advance_any_cart(faction_id, hex_index, target_hex):
-					var cart_move_count := mini(
-						available_cubes,
-						GameState.get_available_cube_space_for_move(
-							faction_id,
-							target_hex,
-							hex_index,
-							true
-						)
-					)
-					if cart_move_count > 0:
-						moves.append({
-							"kind": KIND_FACTION_ACTION,
-							"peer_id": peer_id,
-							"action_type": ActionSystem.Type.PUSH,
-							"hex_index": hex_index,
-							"target_hex": target_hex,
-							"cube_count": cart_move_count,
-							"move_cart_also": true,
-							"faction_id": faction_id,
-						})
 
-		if not jack_mode:
-			for source_hex in GameState.get_adjacent_hexes(hex_index):
-				var source_cubes := GameState.get_faction_cubes_on_hex(source_hex, faction_id)
-				var pull_count := mini(
+	if not jack_mode:
+		for source_hex in GameState.get_adjacent_hexes(hex_index):
+			var source_cubes := GameState.get_faction_cubes_on_hex(source_hex, faction_id)
+			var pull_count := mini(
+				source_cubes,
+				GameState.get_available_cube_space_for_move(
+					faction_id,
+					hex_index,
+					source_hex,
+					false
+				)
+			)
+			if pull_count > 0:
+				moves.append({
+					"kind": KIND_FACTION_ACTION,
+					"peer_id": peer_id,
+					"action_type": ActionSystem.Type.PULL,
+					"hex_index": hex_index,
+					"target_hex": source_hex,
+					"cube_count": pull_count,
+					"move_cart_also": false,
+					"faction_id": faction_id,
+				})
+			if _can_advance_any_cart(faction_id, source_hex, hex_index):
+				var cart_pull_count := mini(
 					source_cubes,
 					GameState.get_available_cube_space_for_move(
 						faction_id,
 						hex_index,
 						source_hex,
-						false
+						true
 					)
 				)
-				if pull_count > 0:
+				if cart_pull_count > 0:
 					moves.append({
 						"kind": KIND_FACTION_ACTION,
 						"peer_id": peer_id,
 						"action_type": ActionSystem.Type.PULL,
 						"hex_index": hex_index,
 						"target_hex": source_hex,
-						"cube_count": pull_count,
-						"move_cart_also": false,
+						"cube_count": cart_pull_count,
+						"move_cart_also": true,
 						"faction_id": faction_id,
 					})
-				if _can_advance_any_cart(faction_id, source_hex, hex_index):
-					var cart_pull_count := mini(
-						source_cubes,
-						GameState.get_available_cube_space_for_move(
-							faction_id,
-							hex_index,
-							source_hex,
-							true
-						)
-					)
-					if cart_pull_count > 0:
-						moves.append({
-							"kind": KIND_FACTION_ACTION,
-							"peer_id": peer_id,
-							"action_type": ActionSystem.Type.PULL,
-							"hex_index": hex_index,
-							"target_hex": source_hex,
-							"cube_count": cart_pull_count,
-							"move_cart_also": true,
-							"faction_id": faction_id,
-						})
 
-		if hex_index in HexBoard.MOUNTAIN_HEXES and not jack_mode:
-			var can_cart := _can_create_cart_on_hex(faction_id, hex_index)
-			if can_cart:
-				moves.append({
+	if hex_index in HexBoard.MOUNTAIN_HEXES and not jack_mode:
+		var can_cart := _can_create_cart_on_hex(faction_id, hex_index)
+		if can_cart:
+			moves.append({
 				"kind": KIND_FACTION_ACTION,
 				"peer_id": peer_id,
 				"action_type": ActionSystem.Type.CREATE_CART,
@@ -297,8 +307,6 @@ static func _generate_map_action_moves(peer_id: int, shop_effect: String = "") -
 				"move_cart_also": false,
 				"faction_id": faction_id,
 			})
-
-	return moves
 
 
 static func _shop_purchase_has_valid_follow_up(peer_id: int, card: Dictionary) -> bool:

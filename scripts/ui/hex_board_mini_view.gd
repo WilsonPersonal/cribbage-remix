@@ -2,9 +2,11 @@ class_name HexBoardMiniView
 extends Control
 
 const REFERENCE_RADIUS := 62.0
+const CART_ARROW_HEAD_LENGTH := 10.0
 const WATER_COLOR := Color("#4a8ec4")
 const BRIDGE_COLOR := Color("#7a5236")
-const HIGHLIGHT_COLOR := Color(1.0, 0.88, 0.35, 0.95)
+const DESTINATION_HIGHLIGHT_COLOR := Color(0.45, 0.95, 0.55, 0.95)
+const SUPPORTING_HIGHLIGHT_COLOR := Color(1.0, 0.92, 0.35, 0.95)
 
 const TERRAIN_COLORS := {
 	HexBoard.Terrain.MOUNTAIN: Color("#8a9098"),
@@ -13,13 +15,29 @@ const TERRAIN_COLORS := {
 }
 
 var board_state: Array = []
-var highlight_hexes: Array = []
+var destination_hex: int = -1
+var supporting_hex: int = -1
 
 
-func set_board(state: Array, highlights: Array = []) -> void:
+func set_board(state: Array, highlights = {}) -> void:
 	board_state = state
-	highlight_hexes = highlights.duplicate()
+	_apply_highlights(highlights)
 	queue_redraw()
+
+
+func _apply_highlights(highlights) -> void:
+	destination_hex = -1
+	supporting_hex = -1
+	if highlights is Dictionary:
+		destination_hex = int(highlights.get("destination", -1))
+		supporting_hex = int(highlights.get("supporting", -1))
+	elif highlights is Array:
+		for hex_value in highlights:
+			var hex_index := int(hex_value)
+			if destination_hex < 0:
+				destination_hex = hex_index
+			elif supporting_hex < 0 and hex_index != destination_hex:
+				supporting_hex = hex_index
 
 
 func _draw() -> void:
@@ -46,11 +64,24 @@ func _draw() -> void:
 		_draw_hex(centers[hex_index], hex_index, hex_radius, scale)
 
 	_draw_carts(centers, hex_radius, scale)
+	_draw_action_highlights(centers, hex_radius, scale)
 
-	for hex_index in highlight_hexes:
-		var index := int(hex_index)
-		if index >= 0 and index < centers.size():
-			_draw_hex_ring(centers[index], hex_radius, HIGHLIGHT_COLOR, maxf(1.5, 2.5 * scale))
+
+func _draw_action_highlights(centers: Array, hex_radius: float, scale: float) -> void:
+	if supporting_hex >= 0 and supporting_hex < centers.size():
+		_draw_hex_ring(
+			centers[supporting_hex],
+			hex_radius,
+			SUPPORTING_HIGHLIGHT_COLOR,
+			maxf(1.5, 2.5 * scale)
+		)
+	if destination_hex >= 0 and destination_hex < centers.size():
+		_draw_hex_ring(
+			centers[destination_hex],
+			hex_radius,
+			DESTINATION_HIGHLIGHT_COLOR,
+			maxf(1.5, 2.5 * scale)
+		)
 
 
 func _fit_hex_radius() -> float:
@@ -109,54 +140,13 @@ func _draw_hex(center: Vector2, hex_index: int, hex_radius: float, scale: float)
 			maxf(1.0, 2.5 * scale)
 		)
 
-	_draw_hex_labels(center, hex_index, hex_radius, scale)
+	HexBoard.draw_hex_labels_on(self, center, hex_index, hex_radius, REFERENCE_RADIUS)
 
 	if hex_index >= board_state.size():
 		return
 
 	var cubes: Dictionary = board_state[hex_index].get("cubes", {})
 	_draw_cube_dots(center, cubes, scale)
-
-
-func _draw_hex_labels(center: Vector2, hex_index: int, hex_radius: float, scale: float) -> void:
-	var labels: Array = HexBoard.labels_for(hex_index)
-	if labels.is_empty():
-		return
-
-	var font_size := maxi(8, int(round(18.0 * scale)))
-	var label_y := center.y - hex_radius * sqrt(3.0) * 0.5 + float(font_size)
-	var label_color := Color(0.05, 0.05, 0.05, 1.0)
-
-	if labels.size() == 1:
-		draw_string(
-			ThemeDB.fallback_font,
-			Vector2(center.x - 20.0 * scale, label_y),
-			str(labels[0]),
-			HORIZONTAL_ALIGNMENT_CENTER,
-			int(40.0 * scale),
-			font_size,
-			label_color
-		)
-		return
-
-	draw_string(
-		ThemeDB.fallback_font,
-		Vector2(center.x - 26.0 * scale, label_y),
-		str(labels[0]),
-		HORIZONTAL_ALIGNMENT_CENTER,
-		int(24.0 * scale),
-		font_size,
-		label_color
-	)
-	draw_string(
-		ThemeDB.fallback_font,
-		Vector2(center.x + 2.0 * scale, label_y),
-		str(labels[1]),
-		HORIZONTAL_ALIGNMENT_CENTER,
-		int(24.0 * scale),
-		font_size,
-		label_color
-	)
 
 
 func _draw_cube_dots(hex_center: Vector2, cubes: Dictionary, scale: float) -> void:
@@ -205,8 +195,11 @@ func _draw_carts(centers: Array, hex_radius: float, scale: float) -> void:
 			if arrow.is_empty():
 				continue
 			var color: Color = Factions.COLORS[faction]
-			draw_line(arrow.start, arrow.end, color, maxf(1.5, 3.0 * scale))
-			_draw_colored_arrow_head(arrow.end, arrow.toward_goal, color, scale)
+			var toward_goal: Vector2 = arrow.toward_goal
+			var head_length := CART_ARROW_HEAD_LENGTH * scale
+			var line_end: Vector2 = arrow.end - toward_goal * head_length
+			draw_line(arrow.start, line_end, color, maxf(1.5, 3.0 * scale))
+			_draw_colored_arrow_head(arrow.end, toward_goal, color, scale)
 
 
 func _cart_entries_for_hex(hex_index: int, carts: Dictionary) -> Array:
@@ -269,7 +262,7 @@ func _cart_arrow_geometry(
 
 func _draw_colored_arrow_head(tip: Vector2, direction: Vector2, color: Color, scale: float) -> void:
 	var side := Vector2(-direction.y, direction.x)
-	var back := 10.0 * scale
+	var back := CART_ARROW_HEAD_LENGTH * scale
 	var wing := 5.0 * scale
 	var p1 := tip - direction * back + side * wing
 	var p2 := tip - direction * back - side * wing

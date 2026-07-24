@@ -52,35 +52,38 @@ static func choose_move_decision(
 	require_positive: bool = false,
 	_use_lookahead: bool = true
 ) -> Dictionary:
-	var ranked: Array = rank_moves(moves, context, _use_lookahead)
-	if require_positive:
-		ranked = _filter_positive_ranked(ranked)
-	if ranked.is_empty():
+	var all_ranked: Array = rank_moves(moves, context, _use_lookahead)
+	var legal_total := all_ranked.size()
+	if all_ranked.is_empty():
 		return {
 			"move": {},
 			"method": _decision_method(require_positive),
 			"chosen_evaluator_score": 0.0,
 			"evaluator_rank": 0,
 			"evaluator_total": 0,
+			"legal_move_total": 0,
+			"positive_move_total": 0,
 			"alternatives": [],
 		}
 
-	var chosen_entry: Dictionary = ranked[0]
+	var positive_ranked: Array = _filter_positive_ranked(all_ranked)
+	var chosen_entry: Dictionary = all_ranked[0]
 	var alternatives: Array = []
-	for index in range(1, mini(3, ranked.size())):
-		var entry: Dictionary = ranked[index]
+	for index in range(1, mini(3, all_ranked.size())):
+		var entry: Dictionary = all_ranked[index]
 		alternatives.append({
 			"move": entry.get("move", {}),
 			"evaluator_score": float(entry.get("score", 0.0)),
 		})
 
-	var method := _decision_method(require_positive)
 	return {
 		"move": chosen_entry.get("move", {}),
-		"method": method,
+		"method": _decision_method(require_positive),
 		"chosen_evaluator_score": float(chosen_entry.get("score", 0.0)),
 		"evaluator_rank": 1,
-		"evaluator_total": ranked.size(),
+		"evaluator_total": legal_total,
+		"legal_move_total": legal_total,
+		"positive_move_total": positive_ranked.size(),
 		"alternatives": alternatives,
 	}
 

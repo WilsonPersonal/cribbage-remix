@@ -18,7 +18,7 @@ static func from_game(peer_id: int) -> AiContext:
 	context.player_influence_snapshot = _snapshot_influence_for(peer_id)
 	context.opponent_influence_snapshot = _snapshot_influence_for(context.opponent_id)
 	context.influence_bonus = _crib_owner_influence_bonus(peer_id)
-	context.primary_faction = highest_influence_faction_for(peer_id, context.influence_bonus)
+	context.primary_faction = _leading_influence_faction(context)
 	context.scoring_faction = _highest_score_faction()
 	context.phase = GameState.current_phase
 	return context
@@ -45,7 +45,18 @@ func effective_influence_for(target_peer_id: int, faction_id: int) -> int:
 	return value
 
 
+func actual_influence_diff(faction_id: int) -> int:
+	return (
+		int(RemixRules.faction_dict_value(player_influence_snapshot, faction_id))
+		- int(RemixRules.faction_dict_value(opponent_influence_snapshot, faction_id))
+	)
+
+
 func influence_diff(faction_id: int) -> int:
+	return actual_influence_diff(faction_id)
+
+
+func projected_influence_diff(faction_id: int) -> int:
 	return (
 		effective_influence_for(peer_id, faction_id)
 		- effective_influence_for(opponent_id, faction_id)
@@ -67,6 +78,17 @@ static func highest_influence_faction_for(
 		value += int(RemixRules.faction_dict_value(bonus, faction_id))
 		if value > best_value:
 			best_value = value
+			best_faction = faction_id
+	return best_faction
+
+
+static func _leading_influence_faction(context: AiContext) -> int:
+	var best_faction := Factions.Id.CLUBS
+	var best_diff := -999999
+	for faction_id in Factions.ALL:
+		var diff := context.actual_influence_diff(faction_id)
+		if diff > best_diff:
+			best_diff = diff
 			best_faction = faction_id
 	return best_faction
 

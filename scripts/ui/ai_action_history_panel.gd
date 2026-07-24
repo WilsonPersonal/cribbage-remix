@@ -135,7 +135,7 @@ func _update_detail() -> void:
 
 	var before_board: Array = entry.get("before_board", [])
 	var after_board: Array = entry.get("after_board", [])
-	var highlights: Array = entry.get("highlight_hexes", [])
+	var highlights: Dictionary = _entry_hex_highlights(entry)
 	var has_maps := not before_board.is_empty()
 	_map_row.visible = has_maps
 	if has_maps:
@@ -157,12 +157,33 @@ func _format_list_entry(entry: Dictionary) -> String:
 	return str(entry.get("summary", entry.get("description", "")))
 
 
+func _entry_hex_highlights(entry: Dictionary) -> Dictionary:
+	var highlights: Dictionary = entry.get("hex_highlights", {})
+	if highlights is Dictionary and not highlights.is_empty():
+		return highlights
+
+	var legacy: Array = entry.get("highlight_hexes", [])
+	if legacy.is_empty():
+		return HexBoard.action_hex_highlights(entry.get("move", {}))
+
+	var converted := {
+		"destination": -1,
+		"supporting": -1,
+	}
+	for hex_value in legacy:
+		var hex_index := int(hex_value)
+		if converted["destination"] < 0:
+			converted["destination"] = hex_index
+		elif converted["supporting"] < 0 and hex_index != converted["destination"]:
+			converted["supporting"] = hex_index
+	return converted
+
+
 func _format_detail(entry: Dictionary) -> String:
 	if _is_discard_entry(entry):
 		return _format_discard_detail(entry)
 
 	var explanation: Dictionary = entry.get("explanation", {})
-	var factors: Array = explanation.get("factors", [])
 	var decision: Dictionary = entry.get("decision", {})
 	var alternatives: Array = entry.get("alternatives", [])
 	var lines: PackedStringArray = PackedStringArray()
@@ -179,18 +200,7 @@ func _format_detail(entry: Dictionary) -> String:
 		)
 	)
 	lines.append("")
-	lines.append("AI power (faction power x influence difference):")
 	lines.append(_format_ai_power(entry))
-	lines.append("")
-	lines.append("AI power increase (largest first):")
-
-	if factors.is_empty():
-		lines.append("  (no significant factors)")
-	else:
-		for factor in factors:
-			var score := float(factor.get("score", 0.0))
-			var sign := "+" if score >= 0.0 else ""
-			lines.append("  %s%.1f  %s" % [sign, score, str(factor.get("name", ""))])
 
 	if _should_show_shop_card_section(entry):
 		lines.append("")
@@ -220,13 +230,19 @@ func _is_discard_entry(entry: Dictionary) -> bool:
 
 
 func _should_show_shop_card_section(entry: Dictionary) -> bool:
-	return int(entry.get("phase", -1)) == GameState.Phase.SPEND_ACTIONS
+	if int(entry.get("phase", -1)) != GameState.Phase.SPEND_ACTIONS:
+		return false
+	var kind := str(entry.get("move", {}).get("kind", ""))
+	return (
+		kind in [MoveGenerator.KIND_SHOP_BUY, MoveGenerator.KIND_END_ACTIONS]
+		or not entry.get("shop_card_evaluations", []).is_empty()
+	)
 
 
 func _format_shop_card_evaluations(entry: Dictionary) -> String:
 	var evaluations: Array = entry.get("shop_card_evaluations", [])
 	if evaluations.is_empty():
-		return "  (none available — complete pending shop action or no legal purchases)"
+		return "  (no legal shop purchases right now)"
 
 	var lines: PackedStringArray = PackedStringArray()
 	for evaluation in evaluations:
@@ -250,6 +266,10 @@ func _format_shop_card_evaluation_line(entry: Dictionary, evaluation: Dictionary
 		marker = " ← chosen"
 	elif worthwhile:
 		marker = " (meets %.0f× cost threshold)" % ShopEvaluator.POWER_COST_MULTIPLIER
+	elif is_finite(delta) and delta >= float(cost):
+		marker = " (positive, below threshold)"
+	elif not bool(evaluation.get("completes", true)):
+		marker = " (no complete follow-up sequence)"
 
 	var follow_up_summary := str(evaluation.get("follow_up_summary", ""))
 	var follow_up_note := ""
@@ -398,33 +418,41 @@ func _discard_top_faction_label(top_faction_names: String) -> String:
 
 func _format_decision_summary(decision: Dictionary, explanation: Dictionary) -> String:
 	if decision.is_empty():
-		return "Total score: %.1f" % float(explanation.get("total", 0.0))
+		return "Total score: %.1f" % _explanation_ai_power_delta(explanation)
 
 	var lines: PackedStringArray = PackedStringArray()
-	lines.append("Decision: Highest positive AI power increase")
+	lines.append("Decision: Highest AI power among all legal moves")
 	var rank := int(decision.get("evaluator_rank", 0))
-	var total := int(decision.get("evaluator_total", 0))
-	if rank > 0 and total > 0:
+	var legal_total := int(decision.get("legal_move_total", decision.get("evaluator_total", 0)))
+	var positive_total := int(decision.get("positive_move_total", 0))
+	var power_delta := _explanation_ai_power_delta(explanation)
+	if rank > 0 and legal_total > 0:
 		lines.append(
 			"AI power delta: %.1f (rank %d of %d legal moves)"
 			% [
-				float(decision.get("chosen_evaluator_score", explanation.get("total", 0.0))),
+				power_delta,
 				rank,
-				total,
+				legal_total,
 			]
 		)
 	else:
-		lines.append(
-			"AI power delta: %.1f"
-			% float(decision.get("chosen_evaluator_score", explanation.get("total", 0.0)))
-		)
+		lines.append("AI power delta: %.1f" % power_delta)
+
+	if positive_total > 0 and positive_total < legal_total:
+		lines.append("%d of %d legal moves had positive AI power" % [positive_total, legal_total])
 
 	if absf(float(explanation.get("lookahead", 0.0))) >= 0.01:
 		lines.append("Pegging lookahead: %.1f" % float(explanation.get("lookahead", 0.0)))
 
-	lines.append("Score = positive change in total AI power (faction power x influence difference)")
-
 	return "\n".join(lines)
+
+
+func _explanation_ai_power_delta(explanation: Dictionary) -> float:
+	var before: Dictionary = explanation.get("ai_power_before", {})
+	var after: Dictionary = explanation.get("ai_power_after", {})
+	if not before.is_empty() or not after.is_empty():
+		return float(after.get("total", 0.0)) - float(before.get("total", 0.0))
+	return float(explanation.get("total", 0.0))
 
 
 func _format_influence_diff_summary(before: Dictionary, after: Dictionary) -> String:
@@ -453,6 +481,8 @@ func _format_influence_diff_line(ai_power: Dictionary, assumed_bonus: Dictionary
 		var diff := int(
 			ai_power.get("by_faction", {}).get(faction_id, {}).get("influence_diff", 0)
 		)
+		if diff == 0 and RemixRules.faction_dict_value(assumed_bonus, faction_id) <= 0:
+			continue
 		var faction_label := Factions.name_for(faction_id)
 		if RemixRules.faction_dict_value(assumed_bonus, faction_id) > 0:
 			faction_label = "%s (assumed)" % faction_label

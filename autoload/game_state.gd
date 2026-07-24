@@ -47,6 +47,7 @@ signal action_cube_anim_requested(faction_id: int, from_hex: int, to_hex: int, m
 signal action_cart_anim_requested(
 	faction_id: int, from_hex: int, to_hex: int, origin_hex: int
 )
+signal action_cart_anim_clear_requested
 signal pegging_state_updated(sequence: Array, total: int, turn_peer: int)
 signal pegging_settling_changed(is_settling: bool)
 signal pegging_hand_visibility_changed
@@ -61,6 +62,7 @@ signal shop_updated(slots: Array)
 signal shop_action_pending_updated(pending: Dictionary)
 signal shop_purchase_scored(buyer_peer_id: int, card: Dictionary, cost: int)
 signal game_message(message: String)
+signal game_saved(path: String)
 signal active_control_changed(peer_id: int)
 signal lobby_updated
 
@@ -1528,8 +1530,13 @@ func request_discard(card_indices: Array) -> void:
 
 	if _all_players_discarded():
 		_cut_card()
-	else:
-		_update_offline_active_player()
+		if not is_ai_peer(peer_id):
+			_autosave_vs_ai_human_turn()
+		return
+
+	if not is_ai_peer(peer_id):
+		_autosave_vs_ai_human_turn()
+	_update_offline_active_player()
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -2038,6 +2045,8 @@ func request_faction_action(
 			int(cart_move.get("to_hex", -1)),
 			int(cart_move.get("origin_hex", -1))
 		)
+	elif action_type == ActionSystem.Type.CREATE_CART:
+		_notify_action_cart_anim_clear()
 
 	_broadcast_board()
 	_emit_undo_availability()
@@ -2141,7 +2150,7 @@ func request_end_action_phase() -> void:
 		return
 
 	if not is_ai_peer(peer_id):
-		save_game_snapshot()
+		_autosave_vs_ai_human_turn()
 
 	action_players_finished[peer_id] = true
 	_clear_action_undo_stack()
@@ -2656,7 +2665,15 @@ func save_game_snapshot(path: String = DEBUG_SAVE_PATH) -> bool:
 	if file == null:
 		return false
 	file.store_string(JSON.stringify(export_debug_snapshot(), "\t"))
+	if not is_ai_search_silence():
+		game_saved.emit(path)
 	return true
+
+
+func _autosave_vs_ai_human_turn() -> void:
+	if not vs_ai_mode:
+		return
+	save_game_snapshot()
 
 
 func save_debug_snapshot(path: String = DEBUG_SAVE_PATH) -> bool:
@@ -2686,6 +2703,7 @@ func export_debug_snapshot() -> Dictionary:
 		"round_number": round_number,
 		"ending_round_triggered": ending_round_triggered,
 		"offline_debug_mode": offline_debug_mode,
+		"vs_ai_mode": vs_ai_mode,
 		"active_control_peer_id": active_control_peer_id,
 		"player_names": player_names.duplicate(),
 		"player_influence": _duplicate_player_faction_actions_from(player_influence),
@@ -2741,6 +2759,8 @@ func import_debug_snapshot(data: Dictionary, apply_views: bool = true) -> bool:
 	current_phase = int(data.get("current_phase", Phase.WAITING)) as Phase
 	round_number = int(data.get("round_number", 0))
 	ending_round_triggered = bool(data.get("ending_round_triggered", false))
+	offline_debug_mode = bool(data.get("offline_debug_mode", offline_debug_mode))
+	vs_ai_mode = bool(data.get("vs_ai_mode", vs_ai_mode))
 	active_control_peer_id = int(data.get("active_control_peer_id", 1))
 	player_names = _normalize_peer_key_dict(data.get("player_names", {}))
 	player_influence = _normalize_peer_faction_dicts(data.get("player_influence", {}))
@@ -2794,6 +2814,7 @@ func import_debug_snapshot(data: Dictionary, apply_views: bool = true) -> bool:
 	if not apply_views:
 		reconcile_pegging_hand_state(false)
 	elif apply_views:
+		_reconcile_loaded_phase()
 		_apply_debug_snapshot_views()
 	return true
 
@@ -2853,6 +2874,14 @@ func _variant_array(value: Variant) -> Array:
 	if typeof(value) != TYPE_ARRAY:
 		return []
 	return value.duplicate(true)
+
+
+func _reconcile_loaded_phase() -> void:
+	if current_phase != Phase.DISCARD_TO_CRIB:
+		return
+	if not _all_players_discarded():
+		return
+	_cut_card()
 
 
 func _apply_debug_snapshot_views() -> void:
@@ -4417,6 +4446,20 @@ func _notify_action_cart_anim(
 		return
 	action_cart_anim_requested.emit(faction_id, from_hex, to_hex, origin_hex)
 	_sync_action_cart_anim.rpc(faction_id, from_hex, to_hex, origin_hex)
+
+
+func _notify_action_cart_anim_clear() -> void:
+	if is_ai_search_silence():
+		return
+	action_cart_anim_clear_requested.emit()
+	_sync_action_cart_anim_clear.rpc()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_action_cart_anim_clear() -> void:
+	if multiplayer.is_server():
+		return
+	action_cart_anim_clear_requested.emit()
 
 
 @rpc("authority", "call_remote", "reliable")

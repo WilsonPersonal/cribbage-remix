@@ -99,6 +99,8 @@ func _ready() -> void:
 	GameState.pending_crib_reject_updated.connect(_on_pending_crib_reject_updated_for_ui)
 	GameState.action_cube_anim_requested.connect(_on_action_cube_anim_requested)
 	GameState.action_cart_anim_requested.connect(_on_action_cart_anim_requested)
+	GameState.action_cart_anim_clear_requested.connect(_on_action_cart_anim_clear_requested)
+	GameState.game_saved.connect(_on_game_saved)
 	GameState.lobby_updated.connect(_on_lobby_updated)
 	GameState.show_hands_updated.connect(_on_show_hands_updated)
 	GameState.cut_card_updated.connect(_on_cut_card_updated_for_scoring)
@@ -795,6 +797,10 @@ func _on_action_cart_anim_requested(
 	)
 
 
+func _on_action_cart_anim_clear_requested() -> void:
+	board.clear_action_cart_anim_mask()
+
+
 func _register_online_players() -> void:
 	if NetworkManager.is_offline_debug():
 		return
@@ -990,6 +996,46 @@ func _show_coin_area_popup(
 	)
 	tween.set_parallel(false)
 	tween.tween_property(popup, "modulate:a", 0.0, 0.25).set_delay(0.45)
+	tween.tween_callback(popup.queue_free)
+
+
+func _on_game_saved(_path: String) -> void:
+	_show_saved_popup()
+
+
+func _show_saved_popup() -> void:
+	var popup := Label.new()
+	popup.text = "Saved"
+	popup.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	popup.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	popup.add_theme_font_size_override("font_size", 28)
+	popup.add_theme_color_override("font_color", Color(0.78, 1.0, 0.86))
+	popup.add_theme_color_override("font_outline_color", Color(0.06, 0.08, 0.12))
+	popup.add_theme_constant_override("outline_size", 6)
+	popup.modulate.a = 0.0
+	popup.custom_minimum_size = Vector2(128.0, 40.0)
+	popup.size = popup.custom_minimum_size
+	popup.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	popup.position = Vector2(
+		(size.x - popup.size.x) * 0.5,
+		size.y * 0.34
+	)
+	popup.z_index = 40
+	popup.scale = Vector2(0.85, 0.85)
+	add_child(popup)
+
+	var start_y := popup.position.y
+	var tween := popup.create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(popup, "modulate:a", 1.0, 0.12)
+	tween.tween_property(popup, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(
+		Tween.EASE_OUT
+	)
+	tween.set_parallel(false)
+	tween.tween_property(popup, "position:y", start_y - 24.0, 0.7).set_trans(Tween.TRANS_SINE).set_ease(
+		Tween.EASE_OUT
+	)
+	tween.tween_property(popup, "modulate:a", 0.0, 0.25).set_delay(0.35)
 	tween.tween_callback(popup.queue_free)
 
 
@@ -1395,16 +1441,13 @@ func _try_push(hex_index: int, peer_id: int) -> void:
 				faction_id
 			)
 			return
-		if _wants_move_cart_also(peer_id) and not _hex_has_movable_cart(
+
+		_selected_source_hex = hex_index
+		if _wants_move_cart_also(peer_id) and _hex_has_movable_cart(
 			hex_index,
 			faction_id,
 			ActionSystem.Type.PUSH
 		):
-			action_help_label.text = "No cart here can advance along its path."
-			return
-
-		_selected_source_hex = hex_index
-		if _wants_move_cart_also(peer_id):
 			action_help_label.text = "Push %s + cart: click the next hex on the highlighted path." % Factions.name_for(
 				faction_id
 			)
@@ -1420,7 +1463,13 @@ func _try_push(hex_index: int, peer_id: int) -> void:
 		return
 
 	var faction_id := _resolve_push_source_faction(_selected_source_hex, peer_id)
-	var move_cart_also := _wants_move_cart_also(peer_id)
+	var move_cart_also := _resolve_move_cart_also(
+		peer_id,
+		_selected_source_hex,
+		hex_index,
+		ActionSystem.Type.PUSH,
+		faction_id
+	)
 	var source_cubes := _effective_cube_max(peer_id, faction_id, _selected_source_hex)
 	var dest_space := GameState.get_available_cube_space_for_move(
 		faction_id,
@@ -1463,16 +1512,12 @@ func _try_pull(hex_index: int, peer_id: int) -> void:
 		if not GameState.player_can_afford_action(peer_id, faction_id):
 			action_help_label.text = _action_blocked_message(peer_id, faction_id)
 			return
-		if _wants_move_cart_also(peer_id) and not _hex_has_movable_cart(
+		_selected_source_hex = hex_index
+		if _wants_move_cart_also(peer_id) and _hex_has_movable_cart(
 			hex_index,
 			faction_id,
 			ActionSystem.Type.PULL
 		):
-			action_help_label.text = "No adjacent cart can advance along its path to this hex."
-			return
-
-		_selected_source_hex = hex_index
-		if _wants_move_cart_also(peer_id):
 			action_help_label.text = (
 				"Pull %s + cart: click the hex on the highlighted path to pull from."
 				% Factions.name_for(faction_id)
@@ -1491,7 +1536,13 @@ func _try_pull(hex_index: int, peer_id: int) -> void:
 		return
 
 	var faction_id := _resolve_pull_destination_faction(_selected_source_hex, peer_id)
-	var move_cart_also := _wants_move_cart_also(peer_id)
+	var move_cart_also := _resolve_move_cart_also(
+		peer_id,
+		_selected_source_hex,
+		hex_index,
+		ActionSystem.Type.PULL,
+		faction_id
+	)
 	var source_cubes := _effective_cube_max(peer_id, faction_id, hex_index)
 	var dest_space := GameState.get_available_cube_space_for_move(
 		faction_id,
@@ -1569,6 +1620,8 @@ func _update_action_highlights() -> void:
 	var peer_id := GameState.get_action_turn_peer_id()
 	if _wants_move_cart_also(peer_id):
 		targets = _cart_path_highlight_hexes()
+		if targets.is_empty():
+			targets = GameState.get_adjacent_hexes(_selected_source_hex)
 	else:
 		targets = GameState.get_adjacent_hexes(_selected_source_hex)
 	board.set_action_selection(_selected_source_hex, targets)
@@ -1631,6 +1684,31 @@ func _hex_has_movable_cart(hex_index: int, faction_id: int, action_type: int) ->
 				for origin_hex in board.hexes[source_hex]["carts"].get(faction_id, []):
 					if board.cart_can_advance(faction_id, source_hex, hex_index, int(origin_hex)):
 						return true
+	return false
+
+
+func _resolve_move_cart_also(
+	peer_id: int,
+	from_hex: int,
+	to_hex: int,
+	action_type: int,
+	faction_id: int
+) -> bool:
+	if not _wants_move_cart_also(peer_id):
+		return false
+
+	var board := HexBoard.new()
+	board.load_state(GameState.get_board_state())
+
+	match action_type:
+		ActionSystem.Type.PUSH:
+			for origin_hex in board.hexes[from_hex]["carts"].get(faction_id, []):
+				if board.cart_can_advance(faction_id, from_hex, to_hex, int(origin_hex)):
+					return true
+		ActionSystem.Type.PULL:
+			for origin_hex in board.hexes[to_hex]["carts"].get(faction_id, []):
+				if board.cart_can_advance(faction_id, to_hex, from_hex, int(origin_hex)):
+					return true
 	return false
 
 

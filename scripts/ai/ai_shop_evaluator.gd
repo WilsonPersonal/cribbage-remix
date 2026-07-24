@@ -1,9 +1,10 @@
 class_name AiShopEvaluator
 extends RefCounted
 
-const POWER_COST_MULTIPLIER := 5.0
+const POWER_COST_MULTIPLIER := 3.0
 const QUEEN_SEARCH_DEPTH := 2
 const DEBUG_SHOP := false
+const Evaluator := preload("res://scripts/ai/ai_evaluator.gd")
 const MoveGenerator := preload("res://scripts/ai/ai_move_generator.gd")
 const Search := preload("res://scripts/ai/ai_search.gd")
 const PowerRating := preload("res://scripts/ai/faction_power_rating.gd")
@@ -34,7 +35,9 @@ static func find_worthwhile_shop_sequence(peer_id: int, context: AiContext) -> A
 		return []
 
 	var best_sequence: Array = []
-	var best_delta := 0.0
+	var best_delta := -INF
+	var fallback_sequence: Array = []
+	var fallback_delta := -INF
 
 	for buy_move in buy_moves:
 		var cost := _buy_move_cost(buy_move)
@@ -47,13 +50,14 @@ static func find_worthwhile_shop_sequence(peer_id: int, context: AiContext) -> A
 		var sequence: Array = candidate.get("sequence", [])
 		var delta := float(candidate.get("delta", 0.0))
 		var slot_index := int(buy_move.get("slot_index", -1))
-		var worthwhile := (
+		var completes := (
 			not sequence.is_empty()
 			and is_finite(delta)
-			and delta > threshold
+			and sequence_completes_pending_shop(peer_id, sequence)
 		)
+		var worthwhile := completes and delta > threshold
 		_debug(
-			"  slot=%d %s %s cost=%d delta=%.1f threshold=%.1f seq=%d worthwhile=%s"
+			"  slot=%d %s %s cost=%d delta=%.1f threshold=%.1f seq=%d completes=%s worthwhile=%s"
 			% [
 				slot_index,
 				Shop.card_effect(card),
@@ -62,21 +66,30 @@ static func find_worthwhile_shop_sequence(peer_id: int, context: AiContext) -> A
 				delta,
 				threshold,
 				sequence.size(),
+				str(completes),
 				str(worthwhile),
 			]
 		)
-		if sequence.is_empty() or not is_finite(delta):
+		if not completes:
 			continue
-		if delta > threshold and delta > best_delta:
+		if worthwhile and delta > best_delta:
 			best_delta = delta
 			best_sequence = sequence
+		if delta >= float(cost) and delta > fallback_delta:
+			fallback_delta = delta
+			fallback_sequence = sequence
+
+	if best_sequence.is_empty() and not fallback_sequence.is_empty():
+		if fallback_delta >= Evaluator.MIN_POSITIVE_SCORE:
+			best_sequence = fallback_sequence
+			best_delta = fallback_delta
+			_debug(
+				"peer=%d using fallback shop sequence | delta=%.1f"
+				% [peer_id, best_delta]
+			)
 
 	if best_sequence.is_empty():
 		_debug("peer=%d no worthwhile shop sequence" % peer_id)
-		return []
-
-	if not sequence_completes_pending_shop(peer_id, best_sequence):
-		_debug("peer=%d rejected incomplete shop sequence" % peer_id)
 		return []
 
 	var result := best_sequence.duplicate(true)
@@ -126,8 +139,14 @@ static func evaluate_all_shop_buy_deltas(peer_id: int, context: AiContext) -> Ar
 		var cost := _buy_move_cost(buy_move)
 		var card: Dictionary = buy_move.get("card", {})
 		var candidate := _best_complete_sequence_for_buy(peer_id, buy_move, context)
+		var sequence: Array = candidate.get("sequence", [])
 		var delta := float(candidate.get("delta", 0.0))
 		var threshold := POWER_COST_MULTIPLIER * float(cost)
+		var completes := (
+			not sequence.is_empty()
+			and is_finite(delta)
+			and sequence_completes_pending_shop(peer_id, sequence)
+		)
 		results.append({
 			"slot_index": int(buy_move.get("slot_index", -1)),
 			"effect": Shop.card_effect(card),
@@ -137,9 +156,10 @@ static func evaluate_all_shop_buy_deltas(peer_id: int, context: AiContext) -> Ar
 			"cost": cost,
 			"delta": delta,
 			"threshold": threshold,
-			"worthwhile": is_finite(delta) and delta > threshold,
+			"worthwhile": completes and is_finite(delta) and delta > threshold,
+			"completes": completes,
 			"follow_up_summary": summarize_shop_sequence_follow_ups(
-				candidate.get("sequence", []),
+				sequence,
 				Shop.card_effect(card)
 			),
 		})
@@ -207,10 +227,58 @@ static func _best_complete_sequence_for_buy(
 
 	if best.get("sequence", []).is_empty():
 		best = _sequence_result(peer_id, context, prefix, snapshot)
+	else:
+		var trimmed_sequence := _trim_sequence_to_applied_moves(
+			peer_id,
+			best.get("sequence", []),
+			snapshot
+		)
+		if trimmed_sequence.is_empty():
+			best = {"sequence": [], "delta": -INF}
+		else:
+			best = _sequence_result(peer_id, context, trimmed_sequence, snapshot)
 
 	GameState.import_debug_snapshot(snapshot, false)
 	_slot_evaluation_cache[cache_key] = best.duplicate(true)
 	return best
+
+
+static func _trim_sequence_to_applied_moves(
+	peer_id: int,
+	sequence: Array,
+	base_snapshot: Dictionary
+) -> Array:
+	if sequence.is_empty():
+		return sequence
+
+	GameState.import_debug_snapshot(base_snapshot, false)
+	var applied: Array = []
+	for move in sequence:
+		var before := _action_state_snapshot(peer_id)
+		Search.apply_move(peer_id, move)
+		var after := _action_state_snapshot(peer_id)
+		if not _action_state_changed(before, after):
+			break
+		applied.append(move.duplicate(true))
+
+	GameState.import_debug_snapshot(base_snapshot, false)
+	return applied
+
+
+static func _action_state_snapshot(peer_id: int) -> Dictionary:
+	return {
+		"total_actions": GameState.get_total_actions_for_peer(peer_id),
+		"pending_shop": GameState.has_pending_shop_action(peer_id),
+		"coins": int(GameState.player_coins.get(peer_id, 0)),
+	}
+
+
+static func _action_state_changed(before: Dictionary, after: Dictionary) -> bool:
+	if int(before.get("total_actions", 0)) != int(after.get("total_actions", 0)):
+		return true
+	if bool(before.get("pending_shop", false)) != bool(after.get("pending_shop", false)):
+		return true
+	return int(before.get("coins", 0)) != int(after.get("coins", 0))
 
 
 static func _best_king_sequence(
@@ -473,10 +541,10 @@ static func summarize_shop_sequence_follow_ups(sequence: Array, effect: String) 
 			parts.append("Deploy %s" % Factions.name_for(int(move.get("faction_id", -1))))
 		elif kind == MoveGenerator.KIND_SHOP_KING_DEPLOY:
 			parts.append(
-				"King deploy %s hex %d"
+				"King deploy %s %s"
 				% [
 					Factions.name_for(int(move.get("faction_id", -1))),
-					int(move.get("hex_index", -1)),
+					HexBoard.format_hex_labels(int(move.get("hex_index", -1))),
 				]
 			)
 		elif kind == MoveGenerator.KIND_FACTION_ACTION:
@@ -508,19 +576,17 @@ static func format_map_move_short(move: Dictionary) -> String:
 		ActionSystem.Type.CREATE_CART:
 			action_label = "Cart"
 
-	var from_hex := int(move.get("hex_index", -1))
-	var to_hex := int(move.get("target_hex", -1))
-	if action_type == ActionSystem.Type.PULL:
-		from_hex = int(move.get("target_hex", -1))
-		to_hex = int(move.get("hex_index", -1))
-
+	var path := HexBoard.format_map_move_path(move)
 	var cart_note := " +cart" if bool(move.get("move_cart_also", false)) else ""
 	var faction_id := int(move.get("faction_id", -1))
 	var faction_note := ""
 	if faction_id in Factions.ALL:
 		faction_note = "%s " % Factions.name_for(faction_id)
 
-	return "%s%s%d→%d%s" % [action_label, faction_note, from_hex, to_hex, cart_note]
+	if path.is_empty():
+		return "%s%s—%s" % [action_label, faction_note, cart_note]
+
+	return "%s%s%s%s" % [action_label, faction_note, path, cart_note]
 
 
 static func _shop_follow_up_moves(moves: Array, allowed_factions: Array = []) -> Array:

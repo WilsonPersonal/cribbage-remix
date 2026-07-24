@@ -16,12 +16,12 @@ const MOUNTAIN_SETUP_CUBES := 5
 const FACTION_STARTING_CUBES := 9
 const MAX_CUBES_PER_FACTION_PER_HEX := 5
 
-## Map layout (hex index -> terrain / labels):
-##       [0 M 2]
-##   [1 F9]   [8 F3]
-##       [4 P7] [2 P1]
-##   [3 F6]   [5 P4]
-## [6 M8]     [7 M5]
+## Map layout (flat-top axial coords; labels are card ranks on each hex):
+##         2       3
+##     9       1
+##         7   4
+##     8       5
+##             6
 const MOUNTAIN_HEXES := [0, 6, 7]
 const FOREST_HEXES := [1, 3, 8]
 const PASTURE_HEXES := [2, 4, 5]
@@ -204,6 +204,129 @@ static func terrain_for(hex_index: int) -> int:
 
 static func labels_for(hex_index: int) -> Array:
 	return HEX_LABELS.get(hex_index, [])
+
+
+static func format_hex_labels(hex_index: int) -> String:
+	if hex_index < 0 or hex_index >= HEX_COUNT:
+		return "—"
+	var labels: Array = labels_for(hex_index)
+	if labels.is_empty():
+		return "?"
+	var parts: PackedStringArray = PackedStringArray()
+	for label in labels:
+		parts.append(str(label))
+	return "/".join(parts)
+
+
+static func label_baseline_y(center_y: float, hex_radius: float, font_size: float) -> float:
+	return center_y - hex_radius * sqrt(3.0) * 0.5 + font_size
+
+
+static func scaled_label_font_size(hex_radius: float, reference_radius: float = 62.0) -> int:
+	var scale := hex_radius / reference_radius
+	return maxi(8, int(round(18.0 * scale)))
+
+
+static func action_hex_highlights(move: Dictionary) -> Dictionary:
+	var highlights := {
+		"destination": -1,
+		"supporting": -1,
+	}
+	match str(move.get("kind", "")):
+		"faction_action":
+			var action_type := int(move.get("action_type", -1))
+			var hex_index := int(move.get("hex_index", -1))
+			var target_hex := int(move.get("target_hex", -1))
+			match action_type:
+				ActionSystem.Type.PUSH:
+					highlights["supporting"] = hex_index
+					highlights["destination"] = target_hex
+				ActionSystem.Type.PULL:
+					highlights["destination"] = hex_index
+					highlights["supporting"] = target_hex
+				ActionSystem.Type.CREATE_CART:
+					highlights["destination"] = hex_index
+		"shop_king_deploy", "crib_choice":
+			highlights["destination"] = int(move.get("hex_index", -1))
+	return highlights
+
+
+static func format_map_move_path(move: Dictionary) -> String:
+	match str(move.get("kind", "")):
+		"faction_action":
+			var action_type := int(move.get("action_type", -1))
+			var hex_index := int(move.get("hex_index", -1))
+			var target_hex := int(move.get("target_hex", -1))
+			match action_type:
+				ActionSystem.Type.PUSH:
+					if target_hex >= 0:
+						return "%s→%s" % [
+							format_hex_labels(hex_index),
+							format_hex_labels(target_hex),
+						]
+					return format_hex_labels(hex_index)
+				ActionSystem.Type.PULL:
+					if target_hex >= 0:
+						return "%s←%s" % [
+							format_hex_labels(hex_index),
+							format_hex_labels(target_hex),
+						]
+					return format_hex_labels(hex_index)
+				ActionSystem.Type.CREATE_CART:
+					return format_hex_labels(hex_index)
+		"shop_king_deploy", "crib_choice":
+			return format_hex_labels(int(move.get("hex_index", -1)))
+	return ""
+
+
+static func draw_hex_labels_on(
+	canvas: CanvasItem,
+	center: Vector2,
+	hex_index: int,
+	hex_radius: float,
+	reference_radius: float = 62.0,
+	font_size: int = -1,
+	label_color: Color = Color(0.05, 0.05, 0.05, 1.0)
+) -> void:
+	var labels: Array = labels_for(hex_index)
+	if labels.is_empty():
+		return
+
+	if font_size < 0:
+		font_size = scaled_label_font_size(hex_radius, reference_radius)
+	var scale := hex_radius / reference_radius
+	var label_y := label_baseline_y(center.y, hex_radius, float(font_size))
+
+	if labels.size() == 1:
+		canvas.draw_string(
+			ThemeDB.fallback_font,
+			Vector2(center.x - 20.0 * scale, label_y),
+			str(labels[0]),
+			HORIZONTAL_ALIGNMENT_CENTER,
+			int(40.0 * scale),
+			font_size,
+			label_color
+		)
+		return
+
+	canvas.draw_string(
+		ThemeDB.fallback_font,
+		Vector2(center.x - 26.0 * scale, label_y),
+		str(labels[0]),
+		HORIZONTAL_ALIGNMENT_CENTER,
+		int(24.0 * scale),
+		font_size,
+		label_color
+	)
+	canvas.draw_string(
+		ThemeDB.fallback_font,
+		Vector2(center.x + 2.0 * scale, label_y),
+		str(labels[1]),
+		HORIZONTAL_ALIGNMENT_CENTER,
+		int(24.0 * scale),
+		font_size,
+		label_color
+	)
 
 
 static func axial_coord(hex_index: int) -> Vector2i:
